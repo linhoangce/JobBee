@@ -116,3 +116,43 @@ def test_delete_document_removes_it() -> None:
 
         miss = client.get(f"/api/documents/{doc_id}/text")
         assert miss.status_code == 404
+
+
+def test_uploading_base_resume_keeps_tailored_copies() -> None:
+    """Replacing the base resume must not delete per-application tailored documents."""
+
+    from sqlalchemy import select
+
+    from app.db import SessionLocal
+    from app.models import Document, DocumentKind, User
+
+    with TestClient(app) as client:
+        client.post("/api/documents/text", json={"kind": "resume", "text": "Old base resume"})
+
+    with SessionLocal() as session:
+        user = session.execute(select(User).order_by(User.id)).scalars().first()
+        tailored = Document(
+            user_id=user.id,
+            kind=DocumentKind.resume,
+            label="Tailored resume — Acme",
+            content="Tailored for Acme",
+            is_base=False,
+        )
+        session.add(tailored)
+        session.commit()
+        tailored_id = tailored.id
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/documents",
+            data={"kind": "resume"},
+            files={"file": ("new.txt", io.BytesIO(b"New base resume text"), "text/plain")},
+        )
+        assert resp.status_code == 201, resp.text
+        docs = client.get("/api/documents").json()
+
+    resumes = [d for d in docs if d["kind"] == "resume"]
+    base = [d for d in resumes if d["is_base"]]
+    assert len(base) == 1
+    assert base[0]["original_filename"] == "new.txt"
+    assert any(d["id"] == tailored_id and not d["is_base"] for d in resumes)

@@ -6,26 +6,47 @@ Endpoints:
   POST   /api/documents/text        JSON paste-in (kind + text + optional label)
   GET    /api/documents             list current user's documents
   GET    /api/documents/{id}/text   return the extracted plain text
+  GET    /api/documents/{id}/file   the PDF (tailored) or the uploaded original
+  GET    /api/documents/styles      the CV / cover letter styles
+  GET    /api/documents/styles/{style}/preview?kind=resume|cover_letter
+                                    a style applied to your latest tailored CV (or a sample)
   DELETE /api/documents/{id}        remove document (and underlying file)
 
-Each user has at most one *active* resume and one *active* cover letter for
-the agent to use — uploading a new one of a given kind replaces the prior one
-so the UI doesn't have to manage selection state.
+Each user has at most one *base* resume and one *base* cover letter for the
+agent to use — uploading a new one of a given kind replaces the prior base
+document so the UI doesn't have to manage selection state. Tailored copies
+owned by applications are listed too but never replaced by an upload.
 """
 
 from __future__ import annotations
 
-import secrets
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..config import BACKEND_DIR
 from ..db import get_session, get_uploads_dir
-from ..models import Document, DocumentKind
-from ..schemas import DocumentKindLiteral, DocumentResponse, DocumentTextResponse
+from ..documents.render_pdf import (
+    SAMPLE_CV,
+    SAMPLE_LETTER,
+    STYLES,
+    cover_letter_html,
+    resume_html,
+)
+from ..models import Application, Document, DocumentKind, Job
+from ..pipeline.tailor import StructuredCv
+from ..schemas import (
+    DocumentKindLiteral,
+    DocumentResponse,
+    DocumentStyleInfo,
+    DocumentTextResponse,
+)
+from ..services.documents import delete_file_if_present, replace_base_document
 from ..services.text_extract import UnsupportedDocumentError, extract
 from .profile import get_or_create_local_user
 
@@ -34,6 +55,21 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 # 10 MB cap. Resumes / cover letters should be well under this; we just want
 # to keep someone from accidentally uploading a 200 MB scanned PDF.
 MAX_BYTES = 10 * 1024 * 1024
+
+# Files are only ever served from JobBee's own data folder.
+SERVE_ROOTS: list[Path] = [BACKEND_DIR / "data"]
+
+
+def confined_file(path_str: str | None) -> Path:
+    """The file at `path_str` if it exists inside a serve root, else 404."""
+
+    if not path_str:
+        raise HTTPException(status_code=404, detail="No file for this document.")
+    path = Path(path_str).resolve()
+    roots = [*SERVE_ROOTS, get_uploads_dir()]
+    if not any(path.is_relative_to(root.resolve()) for root in roots) or not path.is_file():
+        raise HTTPException(status_code=404, detail="File not found.")
+    return path
 
 
 class PasteDocumentRequest(BaseModel):
@@ -50,46 +86,13 @@ def _to_response(doc: Document) -> DocumentResponse:
         original_filename=doc.original_filename,
         mime_type=doc.mime_type,
         byte_size=doc.byte_size,
-        has_file=bool(doc.file_path),
+        has_file=bool(doc.pdf_path or doc.file_path),
         text_length=len(doc.content or ""),
+        is_base=doc.is_base,
+        application_id=doc.application_id,
         created_at=doc.created_at,
         updated_at=doc.updated_at,
     )
-
-
-def _delete_active_of_kind(session: Session, user_id: int, kind: DocumentKind) -> None:
-    """Replace-on-upload: drop any existing doc of this kind for this user."""
-
-    existing = session.execute(
-        select(Document).where(Document.user_id == user_id, Document.kind == kind)
-    ).scalars().all()
-    for doc in existing:
-        _delete_file_if_present(doc.file_path)
-        session.delete(doc)
-
-
-def _delete_file_if_present(path_str: str | None) -> None:
-    if not path_str:
-        return
-    p = Path(path_str)
-    try:
-        if p.is_file():
-            p.unlink()
-    except OSError:
-        # Don't fail the request because the file vanished or is locked;
-        # we'll just orphan the bytes.
-        pass
-
-
-def _safe_filename(name: str) -> str:
-    keep = []
-    for ch in name:
-        if ch.isalnum() or ch in (".", "-", "_"):
-            keep.append(ch)
-        else:
-            keep.append("_")
-    cleaned = "".join(keep).strip("._") or "upload"
-    return cleaned[:160]
 
 
 @router.post("", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
@@ -120,25 +123,16 @@ async def upload_document(
             detail="No text could be extracted. If this is a scanned PDF, paste the text instead.",
         )
 
-    user_uploads = get_uploads_dir() / str(user.id)
-    user_uploads.mkdir(parents=True, exist_ok=True)
-    unique = secrets.token_hex(6)
-    saved_path = user_uploads / f"{kind}_{unique}_{_safe_filename(filename)}"
-    saved_path.write_bytes(raw)
-
-    _delete_active_of_kind(session, user.id, DocumentKind(kind))
-
-    doc = Document(
-        user_id=user.id,
-        kind=DocumentKind(kind),
+    doc = replace_base_document(
+        session,
+        user.id,
+        DocumentKind(kind),
+        text=result.text,
         label=label or filename,
-        content=result.text,
-        file_path=str(saved_path),
-        original_filename=filename,
+        raw=raw,
+        filename=filename,
         mime_type=file.content_type or result.mime_type,
-        byte_size=len(raw),
     )
-    session.add(doc)
     session.commit()
     session.refresh(doc)
     return _to_response(doc)
@@ -154,19 +148,14 @@ def paste_document(
     if not text:
         raise HTTPException(status_code=400, detail="Text is empty.")
 
-    _delete_active_of_kind(session, user.id, DocumentKind(payload.kind))
-
-    doc = Document(
-        user_id=user.id,
-        kind=DocumentKind(payload.kind),
+    doc = replace_base_document(
+        session,
+        user.id,
+        DocumentKind(payload.kind),
+        text=text,
         label=payload.label or ("Resume" if payload.kind == "resume" else "Cover letter"),
-        content=text,
-        file_path=None,
-        original_filename=None,
         mime_type="text/plain",
-        byte_size=len(text.encode("utf-8")),
     )
-    session.add(doc)
     session.commit()
     session.refresh(doc)
     return _to_response(doc)
@@ -179,6 +168,50 @@ def list_documents(session: Session = Depends(get_session)) -> list[DocumentResp
         select(Document).where(Document.user_id == user.id).order_by(Document.id.desc())
     ).scalars().all()
     return [_to_response(d) for d in docs]
+
+
+@router.get("/styles", response_model=list[DocumentStyleInfo])
+def list_styles() -> list[DocumentStyleInfo]:
+    return [
+        DocumentStyleInfo(id=s.id, name=s.name, description=s.description)
+        for s in STYLES.values()
+    ]
+
+
+# The preview is static markup: no scripts, nothing loaded from elsewhere.
+_PREVIEW_CSP = "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'"
+
+
+@router.get("/styles/{style_id}/preview", response_class=HTMLResponse)
+def preview_style(
+    style_id: str,
+    kind: Literal["resume", "cover_letter"] = "resume",
+    session: Session = Depends(get_session),
+) -> HTMLResponse:
+    if style_id not in STYLES:
+        raise HTTPException(status_code=404, detail="Unknown CV style.")
+    user = get_or_create_local_user(session)
+    cv, letter, company, role = SAMPLE_CV, SAMPLE_LETTER, "Acme Corp", "Backend Engineer"
+    recent = session.execute(
+        select(Application, Job)
+        .join(Job, Job.id == Application.job_id)
+        .where(Application.user_id == user.id, Application.resume_doc_id.is_not(None))
+        .order_by(Application.updated_at.desc())
+        .limit(30)
+    ).all()
+    for app, job in recent:
+        tailoring = app.tailoring or {}
+        if tailoring.get("cv"):
+            cv = StructuredCv.model_validate(tailoring["cv"])
+            letter = tailoring.get("cover_letter") or SAMPLE_LETTER
+            company, role = job.company, job.title
+            break
+    markup = (
+        resume_html(cv, style_id)
+        if kind == "resume"
+        else cover_letter_html(cv, letter, company, role, style_id)
+    )
+    return HTMLResponse(markup, headers={"Content-Security-Policy": _PREVIEW_CSP})
 
 
 @router.get("/{doc_id}/text", response_model=DocumentTextResponse)
@@ -196,12 +229,29 @@ def get_document_text(
     )
 
 
+@router.get("/{doc_id}/file")
+def get_document_file(doc_id: int, session: Session = Depends(get_session)) -> FileResponse:
+    user = get_or_create_local_user(session)
+    doc = session.get(Document, doc_id)
+    if doc is None or doc.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    path = confined_file(doc.pdf_path or doc.file_path)
+    media_type = "application/pdf" if path.suffix.lower() == ".pdf" else doc.mime_type
+    return FileResponse(
+        path,
+        media_type=media_type or "application/octet-stream",
+        filename=path.name,
+        content_disposition_type="inline",
+    )
+
+
 @router.delete("/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_document(doc_id: int, session: Session = Depends(get_session)) -> None:
     user = get_or_create_local_user(session)
     doc = session.get(Document, doc_id)
     if doc is None or doc.user_id != user.id:
         raise HTTPException(status_code=404, detail="Document not found.")
-    _delete_file_if_present(doc.file_path)
+    delete_file_if_present(doc.file_path)
+    delete_file_if_present(doc.pdf_path)
     session.delete(doc)
     session.commit()

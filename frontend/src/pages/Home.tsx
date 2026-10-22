@@ -1,214 +1,128 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
-import {
-  api,
-  type Document,
-  type Health,
-  type LLMTestResponse,
-  type Profile,
-} from "../api";
+import { api } from "../api";
+import AgentBar from "../components/AgentBar";
+import ApplicationDrawer from "../components/ApplicationDrawer";
+import ApplicationsList from "../components/ApplicationsList";
+import ApplyingList from "../components/ApplyingList";
+import { cardKey, FeedCard } from "../components/cards";
+import Icon, { BeeMark } from "../components/Icon";
+import { useAction } from "../components/Toast";
+import { useHome } from "../hooks/useHome";
+import { when } from "../lib/format";
 
+/** The inbox: what the agent needs from you, what it's doing, and your history. */
 export default function Home() {
-  const [health, setHealth] = useState<Health | null>(null);
-  const [healthError, setHealthError] = useState<string | null>(null);
-  const [pinging, setPinging] = useState(false);
-  const [pingResult, setPingResult] = useState<LLMTestResponse | null>(null);
+  const { home, error, refresh } = useHome();
+  const [openId, setOpenId] = useState<number | null>(null);
+  const { busy, run } = useAction();
 
-  const [profile, setProfile] = useState<Profile | null>(null);
-  const [documents, setDocuments] = useState<Document[]>([]);
-  const [profileError, setProfileError] = useState<string | null>(null);
+  if (!home) {
+    return error ? (
+      <div className="notice bad">
+        <Icon name="alert" />
+        {error}
+      </div>
+    ) : (
+      <HomeSkeleton />
+    );
+  }
 
-  useEffect(() => {
-    api
-      .health()
-      .then(setHealth)
-      .catch((e: Error) => setHealthError(e.message));
-  }, []);
-
-  useEffect(() => {
-    void (async () => {
-      try {
-        const [p, docs] = await Promise.all([api.getProfile(), api.listDocuments()]);
-        setProfile(p);
-        setDocuments(docs);
-      } catch (e) {
-        setProfileError(e instanceof Error ? e.message : String(e));
-      }
-    })();
-  }, []);
-
-  const onPing = async () => {
-    setPinging(true);
-    setPingResult(null);
-    try {
-      const result = await api.pingLLM();
-      setPingResult(result);
-    } catch (e) {
-      setPingResult({
-        ok: false,
-        provider: health?.llm_provider ?? "?",
-        model: health?.llm_model ?? "?",
-        error: e instanceof Error ? e.message : String(e),
-      });
-    } finally {
-      setPinging(false);
-    }
-  };
-
-  const resume = documents.find((d) => d.kind === "resume");
-  const cover = documents.find((d) => d.kind === "cover_letter");
-  const onboardingComplete = profile?.is_complete ?? false;
+  const { agent, needs_you: cards } = home;
+  const attention = cards.filter((c) => c.type !== "preparing").length;
 
   return (
     <>
-      <h1>Welcome to JobBee</h1>
-      <p>
-        The agent foundation is up. {onboardingComplete
-          ? "Your profile is ready — the job search agent will plug in here next."
-          : "Finish a quick onboarding so the agent knows what to search for."}
-      </p>
-
-      {profileError && (
-        <div className="notice bad">Couldn't load your profile: {profileError}</div>
+      {error && (
+        <div className="notice bad small" style={{ marginBottom: 12 }}>
+          <Icon name="alert" />
+          {error}
+        </div>
       )}
+      <AgentBar agent={agent} onChanged={refresh} />
 
-      {profile && !onboardingComplete && (
-        <div className="card cta">
-          <div>
-            <h2>Set up your profile</h2>
-            <p>
-              Resume{resume ? " ✓" : " ·"} basics{profile.name ? " ✓" : " ·"} preferences
-              {profile.target_roles.length ? " ✓" : ""}
+      <section className="section">
+        <div className="section-head">
+          <h2>Needs you</h2>
+          {attention > 0 && <span className="count">{attention}</span>}
+        </div>
+        {cards.length > 0 ? (
+          <div className="feed">
+            {cards.map((card) => (
+              <FeedCard key={cardKey(card)} card={card} onChanged={refresh} />
+            ))}
+          </div>
+        ) : (
+          <div className="card empty">
+            <BeeMark className="hex" />
+            <h3>All caught up</h3>
+            <p className="small" style={{ marginTop: 4 }}>
+              {agent.searching
+                ? "Searching now. New matches show up here."
+                : agent.next_search_at
+                  ? `JobBee looks again ${when(agent.next_search_at)}. Paste a link above anytime.`
+                  : "Paste a job link above, or press Find jobs now."}
             </p>
+            {agent.shortlisted > 0 && !agent.searching && (
+              <button
+                style={{ marginTop: 14 }}
+                disabled={busy}
+                onClick={() =>
+                  void run(
+                    () => api.prepareMore(Math.min(3, agent.shortlisted)),
+                    "Tailoring your CV for the next ones…",
+                  ).then(refresh)
+                }
+              >
+                <Icon name="sparkle" />
+                Show {Math.min(3, agent.shortlisted)} more good match
+                {Math.min(3, agent.shortlisted) > 1 ? "es" : ""}
+              </button>
+            )}
           </div>
-          <Link to="/onboarding">
-            <button>{profile.name ? "Resume onboarding" : "Start onboarding"}</button>
-          </Link>
-        </div>
+        )}
+      </section>
+
+      {home.applying.length > 0 && (
+        <section className="section">
+          <div className="section-head">
+            <h2>Applying now</h2>
+            <span className="small faint">One at a time. Nothing is submitted without you.</span>
+          </div>
+          <ApplyingList rows={home.applying} paused={agent.paused} onOpen={setOpenId} onChanged={refresh} />
+        </section>
       )}
 
-      {profile && onboardingComplete && (
-        <div className="card">
-          <h2>Your profile</h2>
-          <dl className="kv">
-            <dt>Name</dt>
-            <dd>{profile.name}</dd>
-            {profile.headline && (
-              <>
-                <dt>Headline</dt>
-                <dd>{profile.headline}</dd>
-              </>
-            )}
-            {profile.location && (
-              <>
-                <dt>Location</dt>
-                <dd>{profile.location}</dd>
-              </>
-            )}
-            <dt>Target roles</dt>
-            <dd>{profile.target_roles.join(", ") || <span className="muted">none</span>}</dd>
-            <dt>Work modes</dt>
-            <dd>{profile.work_modes.join(", ") || <span className="muted">none</span>}</dd>
-            <dt>Resume</dt>
-            <dd>
-              {resume ? (
-                <span className="badge ok">{resume.label}</span>
-              ) : (
-                <span className="badge bad">missing</span>
-              )}
-            </dd>
-            <dt>Cover letter</dt>
-            <dd>
-              {cover ? (
-                <span className="badge ok">{cover.label}</span>
-              ) : (
-                <span className="badge muted">none</span>
-              )}
-            </dd>
-          </dl>
-          <div className="button-row" style={{ marginTop: 12 }}>
-            <Link to="/onboarding">
-              <button className="secondary">Edit profile</button>
-            </Link>
-          </div>
+      <section className="section">
+        <div className="section-head">
+          <h2>Your applications</h2>
         </div>
+        <ApplicationsList rows={home.applications} counts={home.counts} onOpen={setOpenId} />
+      </section>
+
+      {!home.setup.telegram && (
+        <p className="small faint" style={{ marginTop: 28, textAlign: "center" }}>
+          Want these cards on your phone? <Link to="/settings#phone">Connect Telegram</Link>
+        </p>
       )}
 
-      <div className="row">
-        <div className="card">
-          <h2>Backend</h2>
-          {healthError && (
-            <div className="notice bad">
-              Couldn't reach the backend: <span className="code">{healthError}</span>
-              <br />
-              Is <span className="code">uvicorn app.main:app --reload --port 8000</span>{" "}
-              running?
-            </div>
-          )}
-          {!health && !healthError && <div className="spinner">Checking…</div>}
-          {health && (
-            <dl className="kv">
-              <dt>Status</dt>
-              <dd>
-                <span className="badge ok">{health.status}</span>
-              </dd>
-              <dt>Environment</dt>
-              <dd>{health.app_env}</dd>
-              <dt>Version</dt>
-              <dd>{health.version}</dd>
-              <dt>Database</dt>
-              <dd>
-                <span className={`badge ${health.db ? "ok" : "bad"}`}>
-                  {health.db ? "connected" : "down"}
-                </span>
-              </dd>
-            </dl>
-          )}
-        </div>
-
-        <div className="card">
-          <h2>LLM</h2>
-          {health && (
-            <dl className="kv">
-              <dt>Provider</dt>
-              <dd>{health.llm_provider}</dd>
-              <dt>Model</dt>
-              <dd>{health.llm_model}</dd>
-            </dl>
-          )}
-          <div className="button-row">
-            <button onClick={onPing} disabled={pinging || !health}>
-              {pinging ? "Pinging…" : "Ping LLM"}
-            </button>
-            <Link to="/settings">
-              <button className="secondary">Configure</button>
-            </Link>
-          </div>
-          {pingResult && (
-            <div className={`notice ${pingResult.ok ? "ok" : "bad"}`}>
-              {pingResult.ok ? (
-                <>
-                  Reply from <span className="code">{pingResult.model}</span>:{" "}
-                  <span className="code">{pingResult.content}</span>
-                </>
-              ) : (
-                <>Error: {pingResult.error}</>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="card">
-        <h2>What's next</h2>
-        <ol>
-          <li>{onboardingComplete ? "✓" : "•"} Profile + resume / cover letter</li>
-          <li>• Job search agent: Playwright + LinkedIn → matched job feed</li>
-          <li>• Approvals: review matches, approve / reject</li>
-          <li>• Apply agent: tailor docs, fill forms, stop at human-in-the-loop confirm</li>
-          <li>• Tracker: status updates + notifications</li>
-        </ol>
-      </div>
+      {openId != null && (
+        <ApplicationDrawer applicationId={openId} onClose={() => setOpenId(null)} onChanged={refresh} />
+      )}
     </>
+  );
+}
+
+function HomeSkeleton() {
+  return (
+    <div className="stack">
+      <div className="card">
+        <div className="skeleton" style={{ height: 14, width: 90 }} />
+        <div className="skeleton" style={{ height: 24, width: "70%", marginTop: 10 }} />
+        <div className="skeleton" style={{ height: 14, width: "50%", marginTop: 14 }} />
+        <div className="skeleton" style={{ height: 40, marginTop: 18 }} />
+      </div>
+      <div className="skeleton" style={{ height: 220, borderRadius: 16, marginTop: 24 }} />
+    </div>
   );
 }

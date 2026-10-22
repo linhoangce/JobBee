@@ -6,7 +6,7 @@ import logging
 from collections.abc import Iterator
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import Engine, create_engine, event, inspect
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import get_settings
@@ -27,52 +27,61 @@ engine = create_engine(_settings.resolved_database_url(), **_engine_kwargs)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 
-def _missing_tables() -> set[str]:
-    inspector = inspect(engine)
-    existing = set(inspector.get_table_names())
-    return {table.name for table in Base.metadata.sorted_tables} - existing
+MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
+_BASELINE_REVISION = "0001"
+_BASELINE_TABLES = {"users", "app_config", "email_sync_states", "documents", "jobs", "applications"}
 
 
-def _schema_is_stale() -> bool:
-    """Return True iff any existing table is missing columns the models declare.
+@event.listens_for(Engine, "connect")
+def _sqlite_pragmas(dbapi_connection, _record) -> None:
+    """WAL + busy timeout so the API and the apply worker can share the file."""
 
-    We intentionally do NOT flag the reverse case (extra columns in the DB) so a
-    forward-compatible binary can read an older DB without nuking it. This is a
-    dev-only convenience; for production we'd switch to Alembic.
-    """
+    import sqlite3
 
-    inspector = inspect(engine)
-    existing_tables = set(inspector.get_table_names())
-    for table in Base.metadata.sorted_tables:
-        if table.name not in existing_tables:
-            # Missing tables are handled by create_all, not a reason to drop.
-            continue
-        existing_cols = {c["name"] for c in inspector.get_columns(table.name)}
-        declared_cols = {c.name for c in table.columns}
-        missing = declared_cols - existing_cols
-        if missing:
-            logger.warning(
-                "Schema drift on table %r: missing columns %s. Will drop and recreate.",
-                table.name,
-                sorted(missing),
-            )
-            return True
-    return False
+    if not isinstance(dbapi_connection, sqlite3.Connection):
+        return
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=5000")
+    cursor.close()
+
+
+def _alembic_config():
+    from alembic.config import Config
+
+    cfg = Config()
+    cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
+    return cfg
 
 
 def init_db() -> None:
-    """Create tables; in dev, drop+recreate if existing tables are missing columns."""
+    upgrade_database(engine)
 
-    # Import here so SQLAlchemy sees the model classes.
-    from . import models  # noqa: F401
 
-    missing = _missing_tables()
-    if missing:
-        logger.info("Creating missing tables: %s", sorted(missing))
+def upgrade_database(target: Engine) -> None:
+    """Bring the database schema to the latest Alembic revision.
 
-    if _schema_is_stale():
-        Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
+    Databases created before Alembic (via `create_all`) match the 0001
+    baseline, so they are stamped at 0001 and then upgraded in place —
+    existing rows are never dropped.
+    """
+
+    from alembic import command
+
+    cfg = _alembic_config()
+    with target.begin() as connection:
+        cfg.attributes["connection"] = connection
+        tables = set(inspect(connection).get_table_names())
+        if tables & _BASELINE_TABLES and "alembic_version" not in tables:
+            missing = _BASELINE_TABLES - tables
+            if missing:
+                raise RuntimeError(
+                    "Database predates migrations and is missing tables "
+                    f"{sorted(missing)}; restore a backup or start from an empty database."
+                )
+            logger.info("Stamping pre-migration database at baseline revision %s", _BASELINE_REVISION)
+            command.stamp(cfg, _BASELINE_REVISION)
+        command.upgrade(cfg, "head")
 
 
 def get_session() -> Iterator[Session]:

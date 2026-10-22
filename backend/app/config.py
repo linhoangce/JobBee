@@ -11,8 +11,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 
-LLMProviderName = Literal["openai", "ollama"]
-ApplyBrowserEngine = Literal["auto", "playwright", "browser_use", "browser_use_cloud"]
+LLMProviderName = Literal["anthropic", "openai", "ollama"]
 
 
 class Settings(BaseSettings):
@@ -37,8 +36,15 @@ class Settings(BaseSettings):
     # --- Database ---
     database_url: str = "sqlite:///./data/jobbee.db"
 
+    # --- Secrets (inbox tokens, ATS passwords) ---
+    secret_store: Literal["keyring", "memory"] = Field(
+        default="keyring",
+        description="keyring = OS credential store (Windows Credential Manager); memory = tests only.",
+    )
+    secret_store_service: str = "JobBee"
+
     # --- LLM ---
-    llm_provider: LLMProviderName = "openai"
+    llm_provider: LLMProviderName = "anthropic"
     llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str = Field(default="", repr=False)
     openrouter_api_key: str = Field(default="", repr=False)
@@ -57,121 +63,37 @@ class Settings(BaseSettings):
         description="Timeout for long inputs such as resume extraction (seconds, max 2h).",
     )
 
-    # --- Apply vision (multimodal LLM reads screenshots to navigate application UIs) ---
-    apply_vision_enabled: bool = Field(
-        default=True,
-        description="Use a multimodal browser agent to navigate application UIs.",
-    )
-    apply_vision_model: str = Field(
+    # --- Claude apply agent (browser toolset) ---
+    anthropic_api_key: str = Field(default="", repr=False)
+    anthropic_workspace_id: str = Field(
         default="",
-        description=(
-            "Vision model id. Empty falls back to LLM_MODEL (Ollama/local) or "
-            "qwen2.5-vl on OpenRouter."
-        ),
+        description="Workspace for organization-wide API keys (sent as anthropic-workspace-id).",
     )
-    apply_harness_max_steps: int = Field(
-        default=24,
-        description="Max observe-plan-act steps during application form preparation.",
+    apply_model: str = "claude-opus-5-5"
+    apply_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
+    apply_max_iterations: int = Field(default=150, ge=10, le=500)
+    apply_max_cost_usd: float = Field(
+        default=5.0,
+        description="Per-application spend cap; the run stops when its estimated cost passes this.",
     )
-    apply_harness_stuck_threshold: int = Field(
-        default=3,
-        description="Identical consecutive screenshots before forced Escape recovery.",
+
+    submit_ttl_min: int = Field(
+        default=45,
+        ge=5,
+        description="How long a filled form waits for the user's Submit tap before it expires.",
     )
-    apply_harness_save_session: bool = Field(
-        default=True,
-        description="Persist per-step screenshots and action logs under data/screenshots/sessions/.",
-    )
-    apply_browser_engine: ApplyBrowserEngine = Field(
-        default="auto",
-        description=(
-            "Browser automation engine for application forms. 'auto' prefers local/open-source "
-            "Browser Use when installed, otherwise the local Playwright harness. Cloud is only "
-            "used when explicitly set to 'browser_use_cloud'."
-        ),
-    )
-    browseruse_api_key: str = Field(
-        default="",
-        repr=False,
-        description="Browser Use API key from BROWSERUSE_API_KEY.",
-    )
-    browser_use_api_key: str = Field(
-        default="",
-        repr=False,
-        description="Browser Use API key from BROWSER_USE_API_KEY.",
-    )
-    browser_use_model: str = Field(
-        default="",
-        description=(
-            "Optional model override for Browser Use apply automation. Local mode accepts "
-            "LiteLLM model names; cloud mode accepts Browser Use Cloud model names."
-        ),
-    )
-    browser_use_max_steps: int = Field(
-        default=30,
-        description="Max local Browser Use agent steps during application form preparation.",
-    )
-    browser_use_timeout_s: float = Field(
-        default=1800.0,
-        description="Max Browser Use apply-agent runtime in seconds.",
-    )
-    browser_use_step_timeout_s: float = Field(
-        default=90.0,
-        description="Max seconds for one local Browser Use reasoning/action step.",
-    )
-    browser_use_max_failures: int = Field(
-        default=2,
-        description="Consecutive Browser Use local step failures before stopping.",
-    )
-    browser_use_wait_before_model_s: float = Field(
-        default=2.0,
-        description="Seconds to let the browser settle before each Browser Use model step.",
-    )
-    browser_use_min_page_load_wait_s: float = Field(
-        default=2.0,
-        description="Minimum page-load wait configured on the local Browser Use browser profile.",
-    )
-    browser_use_network_idle_wait_s: float = Field(
-        default=2.0,
-        description="Network-idle wait configured on the local Browser Use browser profile.",
-    )
-    browser_use_wait_between_actions_s: float = Field(
-        default=1.0,
-        description="Delay between Browser Use browser actions.",
-    )
-    browser_use_window_width: int = Field(
-        default=0,
-        description="Optional local Browser Use window width. 0 uses the detected screen width.",
-    )
-    browser_use_window_height: int = Field(
-        default=0,
-        description="Optional local Browser Use window height. 0 uses the detected screen height.",
-    )
-    browser_use_human_login_wait_s: float = Field(
-        default=600.0,
-        description="How long Browser Use should wait for human login in the live browser.",
-    )
-    browser_use_auto_open_live: bool = Field(
-        default=True,
-        description="In dev, automatically open Browser Use live browser sessions for human login/review.",
-    )
-    browser_use_proxy_country_code: str = Field(
-        default="",
-        description="Optional Browser Use proxy country code. Blank uses Browser Use defaults.",
-    )
-    browser_use_workspace_id: str = Field(
-        default="",
-        description=(
-            "Browser Use Cloud workspace id to reuse for apply automation. "
-            "Blank reuses the first existing workspace returned by Browser Use."
-        ),
-    )
-    browser_use_allow_workspace_create: bool = Field(
-        default=False,
-        description=(
-            "Allow Browser Use Cloud to create a workspace when none exists. "
-            "Keep false to avoid subscription/quota errors from accidental workspace creation."
-        ),
-    )
+    max_parked_runs: int = Field(default=2, ge=1, le=5)
+
+    # --- Claude models per task (used when LLM_PROVIDER=anthropic) ---
+    match_model: str = "claude-haiku-5-5"
+    import_model: str = "claude-haiku-5-5"
+    tailor_model: str = "claude-sonnet-5-5"
+    discover_model: str = "claude-sonnet-5-5"
+    chat_model: str = "claude-haiku-5-5"
+
+    # --- Spend limits across every Claude call (llm_usage ledger) ---
+    daily_budget_usd: float = Field(default=10.0, ge=0)
+    monthly_budget_usd: float = Field(default=100.0, ge=0)
 
     # --- Email sync ---
     email_enrich_jd: bool = Field(
@@ -186,7 +108,10 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:5173"
 
     def resolved_llm_api_key(self) -> str:
-        """Pick the API key for the active OpenAI-compatible endpoint."""
+        """Pick the API key for the active provider."""
+
+        if self.llm_provider == "anthropic":
+            return self.anthropic_api_key.strip()
 
         base = (self.llm_base_url or "").lower()
         if "agentrouter" in base and self.agentrouter_api_key.strip():
@@ -199,6 +124,9 @@ class Settings(BaseSettings):
 
     def resolved_llm_base_url(self) -> str:
         """Normalize base URL for the active provider."""
+
+        if self.llm_provider == "anthropic":
+            return "https://api.anthropic.com"
 
         if self.llm_provider != "openai":
             return self.llm_base_url.rstrip("/")
@@ -217,6 +145,9 @@ class Settings(BaseSettings):
     def resolved_llm_model(self) -> str:
         """Return the configured model id."""
 
+        if self.llm_provider == "anthropic":
+            model = self.llm_model.strip()
+            return model if model.startswith("claude-") else self.match_model
         if (
             self.llm_provider == "openai"
             and self.openrouter_api_key.strip()
@@ -224,36 +155,6 @@ class Settings(BaseSettings):
         ):
             return self.openrouter_model.strip()
         return self.llm_model.strip() or "gpt-4o-mini"
-
-    def resolved_apply_vision_model(self) -> str:
-        """Vision model for apply-agent screenshot decisions."""
-
-        if self.apply_vision_model.strip():
-            return self.apply_vision_model.strip()
-        if self.llm_provider == "ollama":
-            return self.resolved_llm_model()
-        if self.openrouter_api_key.strip():
-            return "qwen/qwen2.5-vl-32b-instruct"
-        return self.resolved_llm_model()
-
-    def resolved_browser_use_api_key(self) -> str:
-        """Return the Browser Use API key, accepting both env var spellings."""
-
-        return (self.browser_use_api_key or self.browseruse_api_key).strip()
-
-    def use_browser_use_apply(self) -> bool:
-        """True when the apply flow should use Browser Use as its primary engine."""
-
-        if self.apply_browser_engine in ("browser_use", "browser_use_cloud"):
-            return True
-        if self.apply_browser_engine == "playwright":
-            return False
-        return True
-
-    def use_browser_use_cloud_apply(self) -> bool:
-        """True only when the user explicitly opted into Browser Use Cloud."""
-
-        return self.apply_browser_engine == "browser_use_cloud"
 
     @property
     def is_dev(self) -> bool:

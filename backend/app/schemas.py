@@ -13,8 +13,10 @@ YesNoLiteral = Literal["yes", "no"]
 DocumentKindLiteral = Literal["resume", "cover_letter"]
 ApplicationStatusLiteral = Literal[
     "matched",
+    "filtered_out",
     "awaiting_approval",
     "approved",
+    "awaiting_submit",
     "submitted",
     "rejected_by_user",
     "failed",
@@ -31,31 +33,27 @@ class HealthResponse(BaseModel):
 
 
 class SettingsResponse(BaseModel):
-    llm_provider: Literal["openai", "ollama"]
+    llm_provider: Literal["anthropic", "openai", "ollama"]
     llm_base_url: str
     llm_model: str
     llm_temperature: float
     llm_timeout_s: float
-    apply_vision_enabled: bool
-    apply_vision_model: str
     has_api_key: bool
 
 
 class SettingsUpdate(BaseModel):
-    llm_provider: Literal["openai", "ollama"] | None = None
+    llm_provider: Literal["anthropic", "openai", "ollama"] | None = None
     llm_base_url: str | None = None
     llm_api_key: str | None = None
     llm_model: str | None = None
     llm_temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     llm_timeout_s: float | None = Field(default=None, gt=0.0, le=600.0)
-    apply_vision_enabled: bool | None = None
-    apply_vision_model: str | None = None
 
 
 class LLMTestRequest(BaseModel):
     """Optional fields override saved settings without persisting them."""
 
-    provider: Literal["openai", "ollama"] | None = None
+    provider: Literal["anthropic", "openai", "ollama"] | None = None
     base_url: str | None = None
     api_key: str | None = None
     model: str | None = None
@@ -148,6 +146,8 @@ class DocumentResponse(BaseModel):
     byte_size: int | None = None
     has_file: bool = False
     text_length: int = 0
+    is_base: bool = True
+    application_id: int | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -190,120 +190,34 @@ class ProfileImportResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-class JobResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    source: str
-    external_id: str | None
-    url: str
-    title: str
-    company: str | None
-    location: str | None
-    description: str | None
-    match_score: float | None
-    match_reason: str | None = None
-    created_at: datetime
-    application_status: str | None = None
 
 
-class JobSearchRequest(BaseModel):
-    sources: list[str] | None = Field(
-        default=None,
-        description="Optional board sources to query. Default: none — use inbox sync instead.",
-    )
-    limit_per_source: int = Field(default=25, ge=1, le=100)
-    score: bool = Field(
-        default=True,
-        description="Run LLM match scoring on jobs returned by this search (re-scores existing listings too).",
-    )
-    queue_for_approval: bool = Field(
-        default=True,
-        description="After scoring, promote the top N matches into the approval queue.",
-    )
-    approval_top_n: int | None = Field(
-        default=None,
-        ge=1,
-        le=50,
-        description="Override profile approval_top_n for this search only.",
-    )
 
 
-class JobSearchResponse(BaseModel):
-    sources_queried: list[str]
-    jobs_found: int
-    jobs_upserted: int
-    jobs_scored: int
-    approval_queued: int = 0
-    warnings: list[str] = Field(default_factory=list)
-    jobs: list[JobResponse] = Field(default_factory=list)
 
 
-class ApplicationResponse(BaseModel):
-    id: int
-    status: ApplicationStatusLiteral
-    job: JobResponse
-    notes: str | None = None
-    created_at: datetime
-    updated_at: datetime
 
 
-class ApplicationDetailResponse(ApplicationResponse):
-    resume_doc_id: int | None = None
-    cover_doc_id: int | None = None
-    submitted_at: datetime | None = None
-    resume_preview: str | None = None
-    cover_preview: str | None = None
-    apply_prepared: bool = False
-    apply_meta: dict | None = None
 
 
-class ApplicationSummary(BaseModel):
-    approved: int
-    submitted: int
-    failed: int
 
 
-class ApplicationListResponse(BaseModel):
-    summary: ApplicationSummary
-    items: list[ApplicationDetailResponse] = Field(default_factory=list)
 
 
-class TailorApplicationResponse(BaseModel):
-    application: ApplicationDetailResponse
-    warnings: list[str] = Field(default_factory=list)
 
 
-class PrepareApplyResponse(BaseModel):
-    application: ApplicationDetailResponse
-    warnings: list[str] = Field(default_factory=list)
 
 
-class ConfirmSubmitResponse(BaseModel):
-    application: ApplicationDetailResponse
-    warnings: list[str] = Field(default_factory=list)
 
 
-class ApprovalSummary(BaseModel):
-    top_n: int
-    awaiting_approval: int
-    approved: int
-    rejected: int
 
 
-class ApprovalListResponse(BaseModel):
-    summary: ApprovalSummary
-    items: list[ApplicationResponse] = Field(default_factory=list)
 
 
-class QueueApprovalsRequest(BaseModel):
-    top_n: int | None = Field(default=None, ge=1, le=50)
 
 
-class QueueApprovalsResponse(BaseModel):
-    top_n: int
-    queued: int
-    items: list[ApplicationResponse] = Field(default_factory=list)
+
+
 
 
 EmailProviderLiteral = Literal["disabled", "gmail", "imap"]
@@ -367,41 +281,380 @@ class EmailDisconnectResponse(BaseModel):
     message: str = "Inbox disconnected."
 
 
-class EmailJobAlertResponse(BaseModel):
+
+
+
+
+
+
+# --- Claude apply runs ---
+
+ApplyRunStatusLiteral = Literal[
+    "queued",
+    "starting",
+    "running",
+    "needs_user",
+    "needs_human",
+    "needs_you",
+    "awaiting_submit",
+    "revising",
+    "submitting",
+    "submitted",
+    "submit_unconfirmed",
+    "discarded",
+    "expired",
+    "blocked",
+    "failed",
+    "cancelled",
+]
+ApplyEffortLiteral = Literal["low", "medium", "high", "xhigh", "max"]
+
+
+class ApplyRunResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    application_id: int
+    status: ApplyRunStatusLiteral
+    url: str
+    ats: str
+    model: str
+    effort: str
+    pending: dict | None = None
+    attended: bool = False
+    finish: dict | None = None
+    error: str | None = None
+    iterations: int = 0
+    tool_calls: int = 0
+    cost_usd: float = 0.0
+    guard_trips: int = 0
+    uninspected_clicks: int = 0
+    review: dict | None = None
+    answers: list | None = None
+    expires_at: datetime | None = None
+    confirmation: dict | None = None
+    created_at: datetime
+    finished_at: datetime | None = None
+
+
+class ApplyEventResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    kind: str
+    data: dict
+    created_at: datetime
+
+
+class ApplyRunDetailResponse(BaseModel):
+    run: ApplyRunResponse
+    events: list[ApplyEventResponse] = Field(default_factory=list)
+
+
+class StartApplyRunRequest(BaseModel):
+    model: str | None = None
+    effort: ApplyEffortLiteral | None = None
+
+
+class AnswerChange(BaseModel):
+    field: str = Field(min_length=1, max_length=300)
+    value: str = Field(max_length=2000)
+
+
+class ApplyRunReviseRequest(BaseModel):
+    changes: list[AnswerChange] = Field(min_length=1, max_length=20)
+
+
+class ApplyRunResumeRequest(BaseModel):
+    note: str = ""
+
+
+class ApplyRunDecisionRequest(BaseModel):
+    submit: bool
+
+
+class ApplyAgentConfigResponse(BaseModel):
+    api_key_configured: bool
+    models: list[str]
+    default_model: str
+    efforts: list[str]
+    default_effort: str
+    max_cost_usd: float
+
+
+# --- Home (inbox feed) ---
+
+ApplicationGroupLiteral = Literal["applied", "in_progress", "skipped", "not_a_fit", "didnt_finish"]
+
+
+class JobCardInfo(BaseModel):
+    id: int
     title: str
     company: str | None = None
     location: str | None = None
+    work_mode: str | None = None
+    salary_text: str | None = None
     url: str
-    snippet: str | None = None
-    alert_source: str
-    email_subject: str = ""
-    email_sender: str = ""
 
 
-class EmailSyncRequest(BaseModel):
-    score: bool = Field(
-        default=True,
-        description="Run match scoring on ingested jobs (snippet used as description when no full JD).",
-    )
-    queue_for_approval: bool = Field(
-        default=True,
-        description="After scoring, promote the top N matches into the approval queue.",
-    )
-    approval_top_n: int | None = Field(
-        default=None,
-        ge=1,
-        le=50,
-        description="Override profile approval_top_n for this sync only.",
-    )
+class MatchCard(BaseModel):
+    type: Literal["match"] = "match"
+    application_id: int
+    job: JobCardInfo
+    score: int | None = None
+    decision: str | None = None
+    summary: str | None = None
+    reasons: list[str] = Field(default_factory=list)
+    gaps: list[str] = Field(default_factory=list)
+    changes: list[str] = Field(default_factory=list)
+    removed_claims: list[str] = Field(default_factory=list)
+    resume_doc_id: int | None = None
+    cover_doc_id: int | None = None
+    style: str | None = None
+    can_restyle: bool = False
+    prepared_at: datetime | None = None
+    older_resume: bool = False  # tailored from the resume the user has since replaced
 
 
-class EmailSyncResponse(BaseModel):
-    messages_scanned: int
-    jobs_found: int
-    jobs_upserted: int = 0
-    jobs_scored: int = 0
-    approval_queued: int = 0
-    provider: EmailProviderLiteral
-    last_sync_at: datetime | None = None
-    warnings: list[str] = Field(default_factory=list)
-    jobs: list[EmailJobAlertResponse] = Field(default_factory=list)
+class RunCard(BaseModel):
+    """A run waiting on the user: review (Submit?), handoff (attended runs), set_aside (needs
+    the user at their PC some time) or unconfirmed."""
+
+    type: Literal["review", "handoff", "set_aside", "unconfirmed"]
+    run_id: int
+    application_id: int
+    job: JobCardInfo
+    handoff_kind: str | None = None
+    updating: bool = False  # answers being changed on the parked form
+    error: str | None = None
+    message: str | None = None
+    summary: str | None = None
+    checks: list[str] = Field(default_factory=list)
+    answers: list[dict] = Field(default_factory=list)
+    screenshot_url: str | None = None
+    expires_at: datetime | None = None
+    clicked: bool | None = None
+
+
+class PreparingCard(BaseModel):
+    type: Literal["preparing"] = "preparing"
+    application_id: int
+    job: JobCardInfo
+    stage: str
+
+
+class NoticeCard(BaseModel):
+    type: Literal["notice"] = "notice"
+    id: int
+    text: str
+    level: str
+    application_id: int | None = None
+    retry: bool = False
+    created_at: datetime
+
+
+class ApplyingRow(BaseModel):
+    run_id: int
+    application_id: int
+    job: JobCardInfo
+    status: str
+    last_event: dict | None = None
+    started_at: datetime
+
+
+class ApplicationRow(BaseModel):
+    id: int
+    job: JobCardInfo
+    status: ApplicationStatusLiteral
+    group: ApplicationGroupLiteral
+    label: str
+    stage_reason: str | None = None
+    score: int | None = None
+    updated_at: datetime
+    submitted_at: datetime | None = None
+
+
+class LastSearch(BaseModel):
+    trigger: str
+    status: str
+    found: int
+    kept: int
+    sent: int
+    error: str | None = None
+    started_at: datetime
+    finished_at: datetime | None = None
+
+
+class AgentStatus(BaseModel):
+    paused: bool
+    searching: bool
+    search_stage: str | None = None
+    next_search_at: datetime | None = None
+    last_search: LastSearch | None = None
+    looking_for: str
+    sent_today: int
+    jobs_per_day: int
+    shortlisted: int
+    spend_today_usd: float
+    daily_budget_usd: float
+    budget_reached: bool
+
+
+class SetupStatus(BaseModel):
+    claude_key: bool
+    resume: bool
+    onboarded: bool
+    telegram: bool
+    inbox: bool
+
+
+class HomeResponse(BaseModel):
+    setup: SetupStatus
+    agent: AgentStatus
+    needs_you: list[RunCard | MatchCard | NoticeCard | PreparingCard] = Field(default_factory=list)
+    applying: list[ApplyingRow] = Field(default_factory=list)
+    counts: dict[str, int] = Field(default_factory=dict)
+    applications: list[ApplicationRow] = Field(default_factory=list)
+
+
+class JobLinkRequest(BaseModel):
+    url: str = Field(min_length=8, max_length=2048)
+
+
+class JobLinkResponse(BaseModel):
+    application_id: int
+    status: ApplicationStatusLiteral
+    duplicate: bool
+    processing: bool
+    message: str
+
+
+class SkipRequest(BaseModel):
+    reason: Literal["not_interested", "level", "location", "salary", "company"] | None = None
+
+
+class ActionResponse(BaseModel):
+    ok: bool = True
+    message: str = ""
+    run_id: int | None = None
+
+
+class RunSummary(BaseModel):
+    id: int
+    status: str
+    created_at: datetime
+    finished_at: datetime | None = None
+    cost_usd: float = 0.0
+    iterations: int = 0
+    error: str | None = None
+    summary: str | None = None
+    attended: bool = False
+    answers: list[dict] = Field(default_factory=list)
+    checks: list[str] = Field(default_factory=list)
+    screenshot_url: str | None = None
+
+
+class SiteAccountView(BaseModel):
+    id: int
+    host: str
+    login: str
+    status: str
+    created_at: datetime
+    last_used_at: datetime | None = None
+
+
+class SiteAccountSecret(BaseModel):
+    password: str
+
+
+class ApplicationView(BaseModel):
+    id: int
+    status: ApplicationStatusLiteral
+    group: ApplicationGroupLiteral | None = None
+    label: str
+    stage_reason: str | None = None
+    job: JobCardInfo
+    description: str | None = None
+    posted_at: datetime | None = None
+    discovered_via: str | None = None
+    screen: dict | None = None
+    changes: list[str] = Field(default_factory=list)
+    removed_claims: list[str] = Field(default_factory=list)
+    resume_doc_id: int | None = None
+    cover_doc_id: int | None = None
+    style: str | None = None
+    can_restyle: bool = False
+    runs: list[RunSummary] = Field(default_factory=list)
+    can_retry: bool = False
+    created_at: datetime
+    updated_at: datetime
+    submitted_at: datetime | None = None
+
+
+class PreferencesPayload(BaseModel):
+    """What the agent looks for; every field optional on update."""
+
+    target_roles: list[str] | None = None
+    target_locations: list[str] | None = None
+    work_modes: list[WorkModeLiteral] | None = None
+    min_salary: int | None = Field(default=None, ge=0)
+    work_authorization: WorkAuthorizationLiteral | None = None
+    requires_sponsorship: YesNoLiteral | None = None
+    jobs_per_day: int | None = Field(default=None, ge=1, le=25)
+    min_match_score: int | None = Field(default=None, ge=0, le=100)
+    excluded_companies: list[str] | None = None
+    discovery_time: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    max_job_age_days: int | None = Field(default=None, ge=1, le=120)
+    web_search_enabled: bool | None = None
+    document_style: str | None = Field(default=None, max_length=40)
+    agent_accounts: bool | None = None
+    agent_consents: bool | None = None
+
+
+class DocumentStyleInfo(BaseModel):
+    id: str
+    name: str
+    description: str
+
+
+class StyleRequest(BaseModel):
+    style: str = Field(max_length=40)
+
+
+class ClaudeKeyRequest(BaseModel):
+    """A new key, a workspace for an organization-wide key, or both."""
+
+    api_key: str | None = Field(default=None, min_length=20, max_length=300)
+    workspace_id: str | None = Field(default=None, max_length=100, pattern=r"^[A-Za-z0-9_-]*$")
+
+
+class ClaudeStatus(BaseModel):
+    connected: bool
+    source: Literal["app", "env", "none"]
+    workspace_id: str = ""
+    models: dict[str, str]
+    spend_today_usd: float
+    spend_month_usd: float
+    daily_budget_usd: float
+    monthly_budget_usd: float
+
+
+class BudgetUpdate(BaseModel):
+    daily_budget_usd: float | None = Field(default=None, ge=0, le=1000)
+    monthly_budget_usd: float | None = Field(default=None, ge=0, le=10000)
+
+
+class WatchlistItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    ats: str
+    slug: str
+    careers_url: str | None = None
+    last_polled_at: datetime | None = None
+    last_error: str | None = None
+
+
+class WatchlistAddRequest(BaseModel):
+    company: str = Field(min_length=2, max_length=500)

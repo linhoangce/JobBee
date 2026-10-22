@@ -35,7 +35,7 @@ export default function GmailConnect({ emailStatus, onStatusChange, compact = fa
     setBusy(true);
     setMessage(null);
     try {
-      const { authorization_url } = await api.startGmailConnect(true);
+      const { authorization_url } = await api.startGmailConnect();
       const popup = window.open(
         authorization_url,
         "jobbee-gmail-oauth",
@@ -62,8 +62,8 @@ export default function GmailConnect({ emailStatus, onStatusChange, compact = fa
   if (emailStatus?.connected) {
     return (
       <div className="gmail-connect">
-        <div className="notice ok">
-          Connected as <span className="code">{emailStatus.connected_email ?? "Gmail"}</span>
+        <div className="notice ok small">
+          Connected as <span className="strong">{emailStatus.connected_email ?? "Gmail"}</span>
         </div>
       </div>
     );
@@ -75,8 +75,8 @@ export default function GmailConnect({ emailStatus, onStatusChange, compact = fa
     <div className={`gmail-connect ${compact ? "compact" : ""}`}>
       {!compact && (
         <p>
-          Import job alerts from LinkedIn, Indeed, and similar senders. JobBee only reads your inbox —
-          it never sends email.
+          Import job alerts from LinkedIn, Indeed, and similar senders, and let JobBee confirm the
+          job-site accounts it makes for you. JobBee only reads your inbox — it never sends email.
         </p>
       )}
 
@@ -91,8 +91,8 @@ export default function GmailConnect({ emailStatus, onStatusChange, compact = fa
           {busy ? "Waiting for Google…" : "Sign in with Google"}
         </button>
       ) : (
-        <div className="notice bad">
-          Gmail sign-in is not available on this install yet.
+        <div className="notice small">
+          Gmail sign-in isn't set up on this install yet (see README → Gmail OAuth).
         </div>
       )}
 

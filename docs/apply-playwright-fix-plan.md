@@ -1,5 +1,7 @@
 # Playwright Apply Fix — Handoff for Next Session
 
+> **Superseded (2026-10-18):** this describes the retired heuristic/vision apply harness. See [apply-engine-spike.md](apply-engine-spike.md).
+
 **Date:** 2026-06-12  
 **Status:** Fixes 1, 2, 3, 5 implemented (2026-06-12)  
 **Do not use Firecrawl for this** — Playwright already reaches the target page; the failure is in harness orchestration.

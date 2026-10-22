@@ -1,59 +1,8 @@
-// Tiny typed wrapper around fetch for the JobBee backend.
-// Everything goes through `/api/*` and is proxied by Vite in dev.
-
-export type Health = {
-  status: "ok";
-  app_env: string;
-  version: string;
-  db: boolean;
-  llm_provider: string;
-  llm_model: string;
-};
-
-export type Settings = {
-  llm_provider: "openai" | "ollama";
-  llm_base_url: string;
-  llm_model: string;
-  llm_temperature: number;
-  llm_timeout_s: number;
-  apply_vision_enabled: boolean;
-  apply_vision_model: string;
-  has_api_key: boolean;
-};
-
-export type SettingsUpdate = Partial<{
-  llm_provider: "openai" | "ollama";
-  llm_base_url: string;
-  llm_api_key: string;
-  llm_model: string;
-  llm_temperature: number;
-  llm_timeout_s: number;
-  apply_vision_enabled: boolean;
-  apply_vision_model: string;
-}>;
-
-export type LLMTestRequest = {
-  provider?: "openai" | "ollama";
-  base_url?: string;
-  api_key?: string;
-  model?: string;
-  prompt?: string;
-};
-
-export type LLMTestResponse = {
-  ok: boolean;
-  provider: string;
-  model: string;
-  content?: string | null;
-  error?: string | null;
-  prompt_tokens?: number | null;
-  completion_tokens?: number | null;
-};
+// Typed client for the JobBee backend. Everything goes through `/api/*` (proxied by Vite in dev).
 
 export type WorkMode = "remote" | "hybrid" | "onsite";
 export type WorkAuthorization = "yes_no_restrictions" | "yes_with_restrictions" | "no";
 export type YesNo = "yes" | "no";
-export type DocumentKind = "resume" | "cover_letter";
 
 export type ApplicationDefaults = {
   phone: string | null;
@@ -89,7 +38,6 @@ export type Profile = {
   skills: string[];
   links: Record<string, string>;
   application_defaults: ApplicationDefaults;
-  approval_top_n: number;
   onboarded_at: string | null;
   is_complete: boolean;
 };
@@ -108,28 +56,7 @@ export type ProfileUpdate = Partial<{
   skills: string[];
   links: Record<string, string>;
   application_defaults: Partial<ApplicationDefaults>;
-  mark_onboarded: boolean;
-  approval_top_n: number;
 }>;
-
-export type Document = {
-  id: number;
-  kind: DocumentKind;
-  label: string;
-  original_filename: string | null;
-  mime_type: string | null;
-  byte_size: number | null;
-  has_file: boolean;
-  text_length: number;
-  created_at: string;
-  updated_at: string;
-};
-
-export type DocumentText = {
-  id: number;
-  kind: DocumentKind;
-  text: string;
-};
 
 export type ProfileDraft = {
   name?: string | null;
@@ -154,340 +81,452 @@ export type ProfileImportResponse = {
   warnings: string[];
 };
 
-export type ImportProfileInput = {
-  resumeFile?: File;
-  githubUsername?: string;
-  githubToken?: string;
-};
-
-export type Job = {
+export type DocumentInfo = {
   id: number;
-  source: string;
-  external_id: string | null;
-  url: string;
-  title: string;
-  company: string | null;
-  location: string | null;
-  description: string | null;
-  match_score: number | null;
-  match_reason: string | null;
-  created_at: string;
-  application_status: string | null;
-};
-
-export type JobSearchRequest = {
-  sources?: string[];
-  limit_per_source?: number;
-  score?: boolean;
-  queue_for_approval?: boolean;
-  approval_top_n?: number;
-};
-
-export type JobSearchResponse = {
-  sources_queried: string[];
-  jobs_found: number;
-  jobs_upserted: number;
-  jobs_scored: number;
-  approval_queued: number;
-  warnings: string[];
-  jobs: Job[];
-};
-
-export type ApplicationStatus =
-  | "matched"
-  | "awaiting_approval"
-  | "approved"
-  | "submitted"
-  | "rejected_by_user"
-  | "failed";
-
-export type Application = {
-  id: number;
-  status: ApplicationStatus;
-  job: Job;
-  notes: string | null;
+  kind: "resume" | "cover_letter";
+  label: string;
+  original_filename: string | null;
+  has_file: boolean;
+  text_length: number;
+  is_base: boolean;
+  application_id: number | null;
   created_at: string;
   updated_at: string;
 };
 
-export type ApplicationDetail = Application & {
+// --- home -----------------------------------------------------------------------
+
+export type ApplicationStatus =
+  | "matched"
+  | "filtered_out"
+  | "awaiting_approval"
+  | "approved"
+  | "awaiting_submit"
+  | "submitted"
+  | "rejected_by_user"
+  | "failed";
+
+export type ApplicationGroup = "applied" | "in_progress" | "skipped" | "not_a_fit" | "didnt_finish";
+
+export type JobInfo = {
+  id: number;
+  title: string;
+  company: string | null;
+  location: string | null;
+  work_mode: string | null;
+  salary_text: string | null;
+  url: string;
+};
+
+/** Where an answer came from; "judgement" and "consent" are the agent's own calls. */
+export type AnswerSource =
+  | "profile"
+  | "resume"
+  | "standard_answer"
+  | "saved_answer"
+  | "judgement"
+  | "consent"
+  | "you";
+
+export type FilledField = { field: string; value: string; source?: AnswerSource; note?: string | null };
+
+export type MatchCard = {
+  type: "match";
+  application_id: number;
+  job: JobInfo;
+  score: number | null;
+  decision: string | null;
+  summary: string | null;
+  reasons: string[];
+  gaps: string[];
+  changes: string[];
+  removed_claims: string[];
   resume_doc_id: number | null;
   cover_doc_id: number | null;
+  style: string | null;
+  can_restyle: boolean;
+  prepared_at: string | null;
+  older_resume: boolean;
+};
+
+export type RunCard = {
+  type: "review" | "handoff" | "set_aside" | "unconfirmed";
+  run_id: number;
+  application_id: number;
+  job: JobInfo;
+  handoff_kind: string | null;
+  updating: boolean;
+  error: string | null;
+  message: string | null;
+  summary: string | null;
+  checks: string[];
+  answers: FilledField[];
+  screenshot_url: string | null;
+  expires_at: string | null;
+  clicked: boolean | null;
+};
+
+export type PreparingCard = {
+  type: "preparing";
+  application_id: number;
+  job: JobInfo;
+  stage: string;
+};
+
+export type NoticeCard = {
+  type: "notice";
+  id: number;
+  text: string;
+  level: "error" | "info";
+  application_id: number | null;
+  retry: boolean;
+  created_at: string;
+};
+
+export type Card = MatchCard | RunCard | PreparingCard | NoticeCard;
+
+export type ApplyEvent = {
+  id: number;
+  kind: string;
+  data: Record<string, unknown>;
+  created_at: string;
+};
+
+export type ApplyingRow = {
+  run_id: number;
+  application_id: number;
+  job: JobInfo;
+  status: string;
+  last_event: { kind: string; data: Record<string, unknown> } | null;
+  started_at: string;
+};
+
+export type ApplicationRow = {
+  id: number;
+  job: JobInfo;
+  status: ApplicationStatus;
+  group: ApplicationGroup;
+  label: string;
+  stage_reason: string | null;
+  score: number | null;
+  updated_at: string;
   submitted_at: string | null;
-  resume_preview: string | null;
-  cover_preview: string | null;
-  apply_prepared: boolean;
-  apply_meta: Record<string, unknown> | null;
 };
 
-export type ApplicationSummary = {
-  approved: number;
-  submitted: number;
-  failed: number;
+export type LastSearch = {
+  trigger: string;
+  status: string;
+  found: number;
+  kept: number;
+  sent: number;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
 };
 
-export type ApplicationListResponse = {
-  summary: ApplicationSummary;
-  items: ApplicationDetail[];
+export type AgentStatus = {
+  paused: boolean;
+  searching: boolean;
+  search_stage: string | null;
+  next_search_at: string | null;
+  last_search: LastSearch | null;
+  looking_for: string;
+  sent_today: number;
+  jobs_per_day: number;
+  shortlisted: number;
+  spend_today_usd: number;
+  daily_budget_usd: number;
+  budget_reached: boolean;
 };
 
-export type TailorApplicationResponse = {
-  application: ApplicationDetail;
-  warnings: string[];
+export type SetupStatus = {
+  claude_key: boolean;
+  resume: boolean;
+  onboarded: boolean;
+  telegram: boolean;
+  inbox: boolean;
 };
 
-export type PrepareApplyResponse = {
-  application: ApplicationDetail;
-  warnings: string[];
+export type Home = {
+  setup: SetupStatus;
+  agent: AgentStatus;
+  needs_you: Card[];
+  applying: ApplyingRow[];
+  counts: Record<ApplicationGroup | "needs_you", number>;
+  applications: ApplicationRow[];
 };
 
-export type ConfirmSubmitResponse = {
-  application: ApplicationDetail;
-  warnings: string[];
+export type ActionResult = { ok: boolean; message: string; run_id: number | null };
+
+export type JobLinkResult = {
+  application_id: number;
+  status: ApplicationStatus;
+  duplicate: boolean;
+  processing: boolean;
+  message: string;
 };
 
-export type ApprovalSummary = {
-  top_n: number;
-  awaiting_approval: number;
-  approved: number;
-  rejected: number;
+export type SkipReason = "not_interested" | "level" | "location" | "salary" | "company";
+
+export type RunSummary = {
+  id: number;
+  status: string;
+  created_at: string;
+  finished_at: string | null;
+  cost_usd: number;
+  iterations: number;
+  error: string | null;
+  summary: string | null;
+  attended: boolean;
+  answers: FilledField[];
+  checks: string[];
+  screenshot_url: string | null;
 };
 
-export type ApprovalListResponse = {
-  summary: ApprovalSummary;
-  items: Application[];
+export type ApplicationView = {
+  id: number;
+  status: ApplicationStatus;
+  group: ApplicationGroup | null;
+  label: string;
+  stage_reason: string | null;
+  job: JobInfo;
+  description: string | null;
+  posted_at: string | null;
+  discovered_via: string | null;
+  screen: { decision?: string; score?: number; summary?: string; reasons?: string[]; gaps?: string[] } | null;
+  changes: string[];
+  removed_claims: string[];
+  resume_doc_id: number | null;
+  cover_doc_id: number | null;
+  style: string | null;
+  can_restyle: boolean;
+  runs: RunSummary[];
+  can_retry: boolean;
+  created_at: string;
+  updated_at: string;
+  submitted_at: string | null;
 };
 
-export type QueueApprovalsRequest = {
-  top_n?: number;
+export type RunDetail = {
+  run: { id: number; status: string; cost_usd: number; iterations: number; error: string | null };
+  events: ApplyEvent[];
 };
 
-export type QueueApprovalsResponse = {
-  top_n: number;
-  queued: number;
-  items: Application[];
+export type SiteAccount = {
+  id: number;
+  host: string;
+  login: string;
+  status: string;
+  created_at: string;
+  last_used_at: string | null;
 };
 
-export type JobSourcesInfo = {
-  available: string[];
-  blocked: string[];
-  notes: Record<string, string>;
+// --- settings ---------------------------------------------------------------------
+
+export type Preferences = {
+  target_roles: string[];
+  target_locations: string[];
+  work_modes: WorkMode[];
+  min_salary: number | null;
+  work_authorization: WorkAuthorization | null;
+  requires_sponsorship: YesNo | null;
+  jobs_per_day: number;
+  min_match_score: number;
+  excluded_companies: string[];
+  discovery_time: string;
+  max_job_age_days: number;
+  web_search_enabled: boolean;
+  document_style: string;
+  agent_accounts: boolean;
+  agent_consents: boolean;
 };
 
-export type EmailProvider = "disabled" | "gmail" | "imap";
+export type DocumentStyle = { id: string; name: string; description: string };
+
+export type ClaudeStatus = {
+  connected: boolean;
+  source: "app" | "env" | "none";
+  workspace_id: string;
+  models: Record<string, string>;
+  spend_today_usd: number;
+  spend_month_usd: number;
+  daily_budget_usd: number;
+  monthly_budget_usd: number;
+};
+
+export type WatchlistItem = {
+  id: number;
+  name: string;
+  ats: string;
+  slug: string;
+  careers_url: string | null;
+  last_polled_at: string | null;
+  last_error: string | null;
+};
 
 export type EmailStatus = {
   connected: boolean;
-  provider: EmailProvider;
+  provider: "disabled" | "gmail" | "imap";
   configured: boolean;
   connected_email: string | null;
   gmail_oauth_available: boolean;
   last_sync_at: string | null;
-  gmail_history_id: string | null;
-  imap_last_uid: number | null;
-  mailbox: string | null;
 };
 
-export type EmailConnectImapRequest = {
-  imap_host: string;
-  imap_user: string;
-  imap_app_password: string;
-  imap_folder?: string;
+export type MessagingStatus = {
+  channel: string;
+  bot_configured: boolean;
+  bot_username: string | null;
+  linked: boolean;
+  linked_at: string | null;
+  polling: boolean;
+  last_error: string | null;
+  paused: boolean;
 };
 
-export type EmailConnectResponse = {
-  ok: boolean;
-  provider: EmailProvider;
-  message: string;
-  connected_email?: string | null;
-};
+export type MessagingLink = { bot_username: string; link_url: string };
 
-export type EmailGmailAuthorizeResponse = {
-  authorization_url: string;
-};
+// --- transport ----------------------------------------------------------------------
 
-export type EmailJobAlert = {
-  title: string;
-  company: string | null;
-  location: string | null;
-  url: string;
-  snippet: string | null;
-  alert_source: string;
-  email_subject: string;
-  email_sender: string;
-};
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
 
-export type EmailSyncRequest = {
-  score?: boolean;
-  queue_for_approval?: boolean;
-  approval_top_n?: number;
-};
-
-export type EmailSyncResponse = {
-  messages_scanned: number;
-  jobs_found: number;
-  jobs_upserted: number;
-  jobs_scored: number;
-  approval_queued: number;
-  provider: EmailProvider;
-  last_sync_at: string | null;
-  warnings: string[];
-  jobs: EmailJobAlert[];
-};
-
-/** Normalize legacy / partial backend payloads so UI never crashes on missing fields. */
-function normalizeEmailSyncResponse(raw: Record<string, unknown>): EmailSyncResponse {
-  const messagesScanned =
-    typeof raw.messages_scanned === "number"
-      ? raw.messages_scanned
-      : typeof raw.messages_fetched === "number"
-        ? raw.messages_fetched
-        : 0;
-  const jobs = Array.isArray(raw.jobs) ? (raw.jobs as EmailJobAlert[]) : [];
-  const warnings = Array.isArray(raw.warnings) ? (raw.warnings as string[]) : [];
-  const jobsFound =
-    typeof raw.jobs_found === "number" ? raw.jobs_found : jobs.length;
-
-  return {
-    messages_scanned: messagesScanned,
-    jobs_found: jobsFound,
-    jobs_upserted: typeof raw.jobs_upserted === "number" ? raw.jobs_upserted : 0,
-    jobs_scored: typeof raw.jobs_scored === "number" ? raw.jobs_scored : 0,
-    approval_queued: typeof raw.approval_queued === "number" ? raw.approval_queued : 0,
-    provider: (raw.provider as EmailProvider) ?? "disabled",
-    last_sync_at: typeof raw.last_sync_at === "string" ? raw.last_sync_at : null,
-    warnings,
-    jobs,
-  };
+function detailMessage(status: number, body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { detail?: unknown };
+    if (typeof parsed.detail === "string") return parsed.detail;
+    if (Array.isArray(parsed.detail) && parsed.detail.length > 0) {
+      const first = parsed.detail[0] as { msg?: string; loc?: unknown[] };
+      const field = Array.isArray(first.loc) ? first.loc[first.loc.length - 1] : null;
+      return field ? `${String(field)}: ${first.msg}` : String(first.msg);
+    }
+  } catch {
+    // not JSON
+  }
+  if (status === 502 || status === 503 || status === 504) {
+    return "JobBee's backend isn't responding. Is it running?";
+  }
+  return body.trim().slice(0, 200) || `Request failed (${status}).`;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = { ...(init?.headers as Record<string, string> | undefined) };
-  // Default Content-Type for JSON requests, but let multipart uploads set their own boundary.
   if (init?.body && typeof init.body === "string" && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
   }
-  const resp = await fetch(path, { ...init, headers });
+  let resp: Response;
+  try {
+    resp = await fetch(path, { ...init, headers });
+  } catch {
+    throw new ApiError("Can't reach JobBee's backend. Is it running?", 0);
+  }
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
-    throw new Error(`${resp.status} ${resp.statusText}: ${text}`);
+    throw new ApiError(detailMessage(resp.status, text), resp.status);
   }
   if (resp.status === 204) return undefined as T;
   return (await resp.json()) as T;
 }
 
+const post = <T>(path: string, body?: unknown) =>
+  request<T>(path, { method: "POST", body: JSON.stringify(body ?? {}) });
+const put = <T>(path: string, body: unknown) =>
+  request<T>(path, { method: "PUT", body: JSON.stringify(body) });
+
 export const api = {
-  health: () => request<Health>("/api/health"),
+  // home + agent
+  home: () => request<Home>("/api/home"),
+  searchNow: () => post<ActionResult>("/api/agent/search"),
+  prepareMore: (count = 3) => post<ActionResult>("/api/agent/more", { count }),
+  pause: () => post<ActionResult>("/api/agent/pause"),
+  resume: () => post<ActionResult>("/api/agent/resume"),
+  dismissNotice: (id: number) => post<ActionResult>(`/api/agent/notices/${id}/dismiss`),
+  retryNotice: (id: number) => post<ActionResult>(`/api/agent/notices/${id}/retry`),
+  addLink: (url: string) => post<JobLinkResult>("/api/jobs/link", { url }),
 
-  getSettings: () => request<Settings>("/api/settings"),
-  updateSettings: (body: SettingsUpdate) =>
-    request<Settings>("/api/settings", {
-      method: "PUT",
-      body: JSON.stringify(body),
-    }),
+  // applications
+  getApplication: (id: number) => request<ApplicationView>(`/api/applications/${id}`),
+  apply: (id: number) => post<ActionResult>(`/api/applications/${id}/apply`),
+  skip: (id: number, reason?: SkipReason) =>
+    post<ActionResult>(`/api/applications/${id}/skip`, reason ? { reason } : {}),
+  prepare: (id: number) => post<ActionResult>(`/api/applications/${id}/prepare`),
+  retry: (id: number) => post<ActionResult>(`/api/applications/${id}/retry`),
+  restyle: (id: number, style: string) => post<ActionResult>(`/api/applications/${id}/style`, { style }),
+  documentUrl: (docId: number) => `/api/documents/${docId}/file`,
+  documentStyles: () => request<DocumentStyle[]>("/api/documents/styles"),
+  stylePreviewUrl: (style: string, kind: "resume" | "cover_letter") =>
+    `/api/documents/styles/${style}/preview?kind=${kind}`,
 
-  testLLM: (body: LLMTestRequest) =>
-    request<LLMTestResponse>("/api/llm/test", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  pingLLM: () =>
-    request<LLMTestResponse>("/api/llm/ping", {
-      method: "POST",
-      body: "{}",
-    }),
+  // apply runs
+  getRun: (runId: number, afterId = 0) =>
+    request<RunDetail>(`/api/apply-runs/${runId}?after_id=${afterId}`),
+  /** Every event of a run (the API pages them 200 at a time). */
+  getRunEvents: async (runId: number) => {
+    const events: ApplyEvent[] = [];
+    for (;;) {
+      const page = await request<RunDetail>(
+        `/api/apply-runs/${runId}?after_id=${events.length ? events[events.length - 1].id : 0}`,
+      );
+      events.push(...page.events);
+      if (page.events.length < 200) return events;
+    }
+  },
+  handoffDone: (runId: number, note = "") => post<unknown>(`/api/apply-runs/${runId}/resume`, { note }),
+  attend: (runId: number) => post<unknown>(`/api/apply-runs/${runId}/attend`),
+  dismissRun: (runId: number) => post<unknown>(`/api/apply-runs/${runId}/dismiss`),
+  revise: (runId: number, changes: { field: string; value: string }[]) =>
+    post<unknown>(`/api/apply-runs/${runId}/revise`, { changes }),
+  cancelRun: (runId: number) => post<unknown>(`/api/apply-runs/${runId}/cancel`),
+  focusRun: (runId: number) => post<void>(`/api/apply-runs/${runId}/focus`),
+  decide: (runId: number, submit: boolean) => post<unknown>(`/api/apply-runs/${runId}/decision`, { submit }),
+  outcome: (runId: number, wentThrough: boolean) =>
+    post<unknown>(`/api/apply-runs/${runId}/outcome`, { went_through: wentThrough }),
 
+  // setup + profile
+  setup: () => request<SetupStatus>("/api/setup"),
+  finishSetup: () => post<ActionResult>("/api/setup/finish"),
+  claude: () => request<ClaudeStatus>("/api/setup/claude"),
+  saveClaudeKey: ({ apiKey, workspaceId }: { apiKey?: string; workspaceId?: string }) =>
+    put<ClaudeStatus>("/api/setup/claude-key", { api_key: apiKey, workspace_id: workspaceId }),
+  forgetClaudeKey: () => request<ClaudeStatus>("/api/setup/claude-key", { method: "DELETE" }),
+  saveBudget: (body: { daily_budget_usd?: number; monthly_budget_usd?: number }) =>
+    put<ClaudeStatus>("/api/setup/budget", body),
   getProfile: () => request<Profile>("/api/profile"),
-  updateProfile: (body: ProfileUpdate) =>
-    request<Profile>("/api/profile", {
-      method: "PUT",
-      body: JSON.stringify(body),
-    }),
-  importProfile: async ({ resumeFile, githubUsername, githubToken }: ImportProfileInput) => {
+  updateProfile: (body: ProfileUpdate) => put<Profile>("/api/profile", body),
+  importProfile: (resumeFile: File) => {
     const form = new FormData();
-    if (resumeFile) form.append("resume_file", resumeFile);
-    if (githubUsername) form.append("github_username", githubUsername);
-    if (githubToken) form.append("github_token", githubToken);
-    return request<ProfileImportResponse>("/api/profile/import", {
-      method: "POST",
-      body: form,
-    });
+    form.append("resume_file", resumeFile);
+    return request<ProfileImportResponse>("/api/profile/import", { method: "POST", body: form });
   },
+  listDocuments: () => request<DocumentInfo[]>("/api/documents"),
+  getPreferences: () => request<Preferences>("/api/preferences"),
+  savePreferences: (body: Partial<Preferences>) => put<Preferences>("/api/preferences", body),
 
-  listDocuments: () => request<Document[]>("/api/documents"),
-  uploadDocument: async (file: File, kind: DocumentKind, label?: string) => {
-    const form = new FormData();
-    form.append("file", file);
-    form.append("kind", kind);
-    if (label) form.append("label", label);
-    return request<Document>("/api/documents", { method: "POST", body: form });
-  },
-  pasteDocument: (kind: DocumentKind, text: string, label?: string) =>
-    request<Document>("/api/documents/text", {
-      method: "POST",
-      body: JSON.stringify({ kind, text, label }),
-    }),
-  getDocumentText: (id: number) => request<DocumentText>(`/api/documents/${id}/text`),
-  deleteDocument: (id: number) =>
-    request<void>(`/api/documents/${id}`, { method: "DELETE" }),
+  // job-site accounts the agent made
+  siteAccounts: () => request<SiteAccount[]>("/api/site-accounts"),
+  revealSiteAccount: (id: number) =>
+    post<{ password: string }>(`/api/site-accounts/${id}/reveal`),
+  forgetSiteAccount: (id: number) => request<void>(`/api/site-accounts/${id}`, { method: "DELETE" }),
 
-  getJobSources: () => request<JobSourcesInfo>("/api/jobs/sources"),
-  listJobs: (minScore?: number) =>
-    request<Job[]>(minScore != null ? `/api/jobs?min_score=${minScore}` : "/api/jobs"),
-  searchJobs: (body: JobSearchRequest = {}) =>
-    request<JobSearchResponse>("/api/jobs/search", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-
-  listApprovals: () => request<ApprovalListResponse>("/api/approvals"),
-  queueApprovals: (body: QueueApprovalsRequest = {}) =>
-    request<QueueApprovalsResponse>("/api/approvals/queue", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  approveApplication: (id: number) =>
-    request<Application>(`/api/approvals/${id}/approve`, { method: "POST" }),
-  rejectApplication: (id: number) =>
-    request<Application>(`/api/approvals/${id}/reject`, { method: "POST" }),
-
-  listApplications: (status?: ApplicationStatus) =>
-    request<ApplicationListResponse>(
-      status ? `/api/applications?status=${status}` : "/api/applications",
-    ),
-  getApplication: (id: number) => request<ApplicationDetail>(`/api/applications/${id}`),
-  tailorApplication: (id: number) =>
-    request<TailorApplicationResponse>(`/api/applications/${id}/tailor`, { method: "POST" }),
-  prepareApplication: (id: number) =>
-    request<PrepareApplyResponse>(`/api/applications/${id}/prepare-apply`, { method: "POST" }),
-  confirmSubmit: (id: number) =>
-    request<ConfirmSubmitResponse>(`/api/applications/${id}/confirm-submit`, { method: "POST" }),
-  markApplicationFailed: (id: number, reason?: string) =>
-    request<ApplicationDetail>(
-      reason
-        ? `/api/applications/${id}/mark-failed?reason=${encodeURIComponent(reason)}`
-        : `/api/applications/${id}/mark-failed`,
-      { method: "POST" },
-    ),
-  applicationScreenshotUrl: (id: number) => `/api/applications/${id}/screenshot`,
-
+  // sources
+  watchlist: () => request<WatchlistItem[]>("/api/watchlist"),
+  addCompany: (company: string) => post<WatchlistItem>("/api/watchlist", { company }),
+  removeCompany: (id: number) => request<void>(`/api/watchlist/${id}`, { method: "DELETE" }),
   getEmailStatus: () => request<EmailStatus>("/api/email/status"),
-  startGmailConnect: (popup = false) =>
-    request<EmailGmailAuthorizeResponse>(
-      popup ? "/api/email/gmail/authorize?popup=1" : "/api/email/gmail/authorize",
-    ),
-  connectImap: (body: EmailConnectImapRequest) =>
-    request<EmailConnectResponse>("/api/email/connect/imap", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  disconnectEmail: () =>
-    request<{ ok: boolean; message: string }>("/api/email/disconnect", { method: "POST" }),
-  syncEmailAlerts: async (body?: EmailSyncRequest) =>
-    normalizeEmailSyncResponse(
-      (await request<Record<string, unknown>>("/api/email/sync", {
-        method: "POST",
-        body: JSON.stringify(body ?? {}),
-      })) as Record<string, unknown>,
-    ),
+  startGmailConnect: () =>
+    request<{ authorization_url: string }>("/api/email/gmail/authorize?popup=1"),
+  disconnectEmail: () => post<unknown>("/api/email/disconnect"),
+
+  // Telegram (optional)
+  getMessagingStatus: () => request<MessagingStatus>("/api/messaging/status"),
+  setupTelegram: (token: string) => post<MessagingLink>("/api/messaging/telegram", { token }),
+  newTelegramLink: () => post<MessagingLink>("/api/messaging/telegram/link"),
+  sendTestMessage: () => post<void>("/api/messaging/test"),
+  disconnectTelegram: () => request<void>("/api/messaging/telegram", { method: "DELETE" }),
 };

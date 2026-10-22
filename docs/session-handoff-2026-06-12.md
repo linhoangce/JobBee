@@ -1,5 +1,7 @@
 # JobBee Session Handoff — 2026-06-12
 
+> **Partly superseded (2026-10-18):** the apply-harness sections describe the retired heuristic/vision engine; see [apply-engine-spike.md](apply-engine-spike.md). The application-defaults and resume-import notes still apply.
+
 **Purpose:** Continue apply automation, ATS form filling, and onboarding import without re-discovering context.
 
 ---

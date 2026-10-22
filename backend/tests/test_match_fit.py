@@ -56,20 +56,3 @@ def test_apply_fit_clamps_score() -> None:
     score, reason = apply_fit_adjustments(user, job, 85.0, "Strong skills match.")
     assert score < 85.0
     assert "Strong skills" in reason
-
-
-def test_heuristic_score_boosts_skill_overlap() -> None:
-    from app.agents.match_agent import score_job_heuristic
-
-    user = User(name="Lin")
-    user.target_roles = ["Backend engineer"]
-    user.skills = ["python", "fastapi"]
-    user.work_modes = ["remote"]
-    job = _job(
-        title="Backend Engineer",
-        location="Remote",
-        description="Python and FastAPI microservices.",
-    )
-    result = score_job_heuristic(job, user)
-    assert result.score >= 50
-    assert "python" in result.reason.lower() or "Matched" in result.reason

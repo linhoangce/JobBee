@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -12,15 +11,15 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.main import app
 from app.models import EmailSyncState
-from app.services.app_config import save_gmail_oauth_setup
 from app.services.email_client import (
     EmailNotConfiguredError,
     GmailClient,
     ImapClient,
-    RawEmailMessage,
     build_email_client,
 )
-from app.services.email_connection import UserEmailConnection, save_gmail_connection, save_imap_connection
+from app.services.email_connection import (
+    UserEmailConnection,
+)
 from app.services.gmail_oauth import build_authorization_url, oauth_state_is_popup
 from app.services.gmail_oauth_ui import oauth_popup_result_html
 
@@ -233,53 +232,6 @@ def test_disconnect_clears_connection() -> None:
     assert status.json()["connected"] is False
 
 
-def test_email_sync_updates_cursor() -> None:
-    state = EmailSyncState(user_id=1)
-    save_gmail_connection(state, refresh_token="tok", connected_email="u@gmail.com")
-    fake_messages = [
-        RawEmailMessage(
-            provider_message_id="abc",
-            subject="New jobs matching Python",
-            sender="jobs-listings@linkedin.com",
-            received_at=datetime.now(timezone.utc),
-            snippet="Role at Acme",
-            body=(
-                '<a href="https://www.linkedin.com/jobs/view/5000000001">Backend Engineer</a>'
-                "<p>Acme Corp · Remote</p>"
-            ),
-        )
-    ]
-    fake_updates = {"provider": "gmail", "gmail_history_id": "9912345"}
-
-    mock_client = MagicMock()
-    mock_client.fetch_new_messages.return_value = (fake_messages, fake_updates)
-
-    with patch("app.api.email.get_settings", return_value=_app_settings()):
-        with patch("app.api.email.user_is_connected", return_value=True):
-            with patch("app.api.email.connection_from_state", return_value=_gmail_connection()):
-                with patch("app.api.email._build_email_client_for_state", return_value=mock_client):
-                    with patch(
-                        "app.services.job_ingest.score_job",
-                        new_callable=AsyncMock,
-                    ) as score_job:
-                        from app.agents.match_agent import MatchResult
-
-                        score_job.return_value = MatchResult(score=75.0, reason="Good fit.")
-                        with TestClient(app) as client:
-                            resp = client.post("/api/email/sync")
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["messages_scanned"] == 1
-    assert "jobs" in body
-
-
-def test_email_sync_requires_connection() -> None:
-    with TestClient(app) as client:
-        resp = client.post("/api/email/sync")
-    assert resp.status_code == 400
-
-
 def test_oauth_popup_state_and_html() -> None:
     assert oauth_state_is_popup("popup:abc123")
     assert not oauth_state_is_popup("abc123")
@@ -299,3 +251,34 @@ def test_build_authorization_url_uses_credentials() -> None:
     url = build_authorization_url(creds, state="popup:token")
     assert "client_id=abc.apps.googleusercontent.com" in url
     assert "gmail.readonly" in url
+
+
+def test_imap_password_goes_to_secret_store_not_database_or_responses() -> None:
+    from sqlalchemy import inspect as sa_inspect
+
+    from app.api.profile import get_or_create_local_user
+    from app.db import SessionLocal, engine
+    from app.services.secrets import IMAP_APP_PASSWORD, get_user_secret
+
+    mock_client = MagicMock()
+    with patch("app.api.email.build_email_client", return_value=mock_client):
+        with TestClient(app) as client:
+            resp = client.post(
+                "/api/email/connect/imap",
+                json={
+                    "imap_host": "imap.example.com",
+                    "imap_user": "u@example.com",
+                    "imap_app_password": "super-secret-pass",
+                },
+            )
+            status = client.get("/api/email/status")
+
+    assert resp.status_code == 200
+    assert status.json()["connected"] is True
+    assert "super-secret-pass" not in resp.text
+    assert "super-secret-pass" not in status.text
+    columns = {c["name"] for c in sa_inspect(engine).get_columns("email_sync_states")}
+    assert "imap_app_password" not in columns
+    with SessionLocal() as session:
+        user = get_or_create_local_user(session)
+        assert get_user_secret(user.id, IMAP_APP_PASSWORD) == "super-secret-pass"

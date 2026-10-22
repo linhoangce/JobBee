@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
-from ..agents.email_agent import run_email_sync
 from ..config import get_settings
 from ..db import get_session
 from ..schemas import (
@@ -19,10 +16,7 @@ from ..schemas import (
     EmailGmailSetupRequest,
     EmailGmailSetupResponse,
     EmailGmailSetupSaveResponse,
-    EmailJobAlertResponse,
     EmailStatusResponse,
-    EmailSyncRequest,
-    EmailSyncResponse,
 )
 from ..services.app_config import (
     get_config_value,
@@ -47,9 +41,9 @@ from ..services.email_connection import (
 )
 from ..services.email_sync import get_or_create_email_sync_state
 from ..services.gmail_oauth import (
+    GMAIL_API_ENABLE_URL,
     GOOGLE_CLOUD_CONSOLE,
     GOOGLE_OAUTH_CLIENTS_URL,
-    GMAIL_API_ENABLE_URL,
     build_authorization_url,
     exchange_authorization_code,
     new_oauth_state,
@@ -295,69 +289,3 @@ def disconnect_email(session: Session = Depends(get_session)) -> EmailDisconnect
     clear_email_connection(sync_state)
     session.commit()
     return EmailDisconnectResponse()
-
-
-@router.post("/sync", response_model=EmailSyncResponse)
-async def email_sync(
-    payload: EmailSyncRequest | None = None,
-    session: Session = Depends(get_session),
-) -> EmailSyncResponse:
-    """Fetch job-alert emails, parse listings, upsert jobs, and score matches."""
-
-    req = payload or EmailSyncRequest()
-    user = get_or_create_local_user(session)
-    sync_state = get_or_create_email_sync_state(session, user.id)
-
-    if not user_is_connected(sync_state):
-        raise HTTPException(status_code=400, detail="No inbox connected. Connect Gmail first.")
-
-    connection = connection_from_state(sync_state)
-    if connection is None:
-        raise HTTPException(status_code=400, detail="Inbox connection is incomplete.")
-
-    try:
-        client = _build_email_client_for_state(session, sync_state)
-        messages, updates = client.fetch_new_messages(cursor=sync_state)
-    except EmailNotConfiguredError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except EmailClientError as e:
-        raise HTTPException(status_code=502, detail=str(e)) from e
-
-    result = await run_email_sync(
-        session,
-        user,
-        messages,
-        score_jobs=req.score,
-        queue_for_approval=req.queue_for_approval,
-        approval_top_n=req.approval_top_n,
-    )
-
-    now = datetime.now(timezone.utc)
-    _apply_cursor_updates(sync_state, updates)
-    sync_state.last_sync_at = now
-    session.commit()
-    session.refresh(sync_state)
-
-    return EmailSyncResponse(
-        messages_scanned=result.messages_scanned,
-        jobs_found=result.jobs_found,
-        jobs_upserted=result.jobs_upserted,
-        jobs_scored=result.jobs_scored,
-        approval_queued=result.approval_queued,
-        provider=status_provider(sync_state),  # type: ignore[arg-type]
-        last_sync_at=sync_state.last_sync_at,
-        warnings=result.warnings,
-        jobs=[
-            EmailJobAlertResponse(
-                title=job.title,
-                company=job.company,
-                location=job.location,
-                url=job.url,
-                snippet=job.snippet,
-                alert_source=job.alert_source,
-                email_subject=job.email_subject,
-                email_sender=job.email_sender,
-            )
-            for job in result.jobs
-        ],
-    )

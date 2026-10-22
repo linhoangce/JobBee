@@ -8,6 +8,7 @@ from ..config import get_settings
 from ..llm.base import ChatMessage, LLMError, strip_model_artifacts
 from ..llm.factory import build_provider, get_llm_provider
 from ..schemas import LLMTestRequest, LLMTestResponse
+from ..services.secrets import claude_api_key, claude_workspace_id
 
 router = APIRouter(prefix="/llm", tags=["llm"])
 
@@ -26,6 +27,11 @@ async def llm_test(req: LLMTestRequest) -> LLMTestResponse:
     base_url = req.base_url or settings.resolved_llm_base_url()
     api_key = req.api_key if req.api_key is not None else settings.resolved_llm_api_key()
     model = req.model or settings.resolved_llm_model()
+    if provider_name == "anthropic":
+        if req.api_key is None:
+            api_key = claude_api_key()
+        if not model.startswith("claude-"):
+            model = settings.match_model
 
     provider = build_provider(
         provider=provider_name,
@@ -33,6 +39,7 @@ async def llm_test(req: LLMTestRequest) -> LLMTestResponse:
         api_key=api_key,
         model=model,
         timeout_s=settings.llm_timeout_s,
+        workspace_id=claude_workspace_id() if provider_name == "anthropic" else "",
     )
 
     try:

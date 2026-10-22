@@ -75,7 +75,7 @@ LinkedIn later (if ever): **assisted browse only** — user searches in their ow
 - SQLite means user data never has to leave the machine.
 - The Ollama path means the LLM doesn't either.
 - The only optional egress is the hosted LLM API and the actual job-board sites.
-- Credentials for job boards are entered in a real browser session via Playwright's persistent context — JobBee never asks for or stores passwords directly.
+- Job-site accounts (Workday tenants, iCIMS portals…) are made by the apply agent with the user's email and a password JobBee generates. The password lives only in the OS keyring (`site:<host>`; the `site_accounts` table is the index). The driver types it into password inputs on that host; it never reaches the model, logs or events. Settings shows it on an explicit click. JobBee never asks for the user's own passwords.
 
 ## Open questions for later milestones
 

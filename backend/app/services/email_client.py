@@ -66,6 +66,14 @@ class EmailClient(Protocol):
     ) -> tuple[list[RawEmailMessage], dict[str, object]]:
         """Return new messages and cursor field updates for the caller to persist."""
 
+    def search_recent(
+        self, *, senders: list[str], since: datetime, max_messages: int = 10
+    ) -> list[RawEmailMessage]:
+        """Messages from any of these sender domains received after `since`, newest first.
+
+        Leaves the job-alert cursor alone.
+        """
+
 
 def build_email_client(
     connection: UserEmailConnection,
@@ -312,6 +320,15 @@ class GmailClient:
             body=body,
         )
 
+    def search_recent(
+        self, *, senders: list[str], since: datetime, max_messages: int = 10
+    ) -> list[RawEmailMessage]:
+        query = f"after:{int(since.timestamp())} from:({' OR '.join(senders)})"
+        data = self._request(
+            "GET", "/users/me/messages", params={"q": query, "maxResults": max_messages}
+        )
+        return [self._fetch_message(m["id"]) for m in data.get("messages", []) if m.get("id")]
+
     def fetch_new_messages(
         self,
         *,
@@ -361,6 +378,53 @@ class ImapClient:
                 conn.logout()
             except imaplib.IMAP4.error:
                 pass
+
+    def search_recent(
+        self, *, senders: list[str], since: datetime, max_messages: int = 10
+    ) -> list[RawEmailMessage]:
+        # IMAP SINCE is a whole day; the exact cut-off is applied after fetching.
+        day = since.astimezone(timezone.utc).strftime("%d-%b-%Y")
+        criteria = f'FROM "{senders[0]}"'
+        for sender in senders[1:]:
+            criteria = f'OR FROM "{sender}" {criteria}'
+        conn = self._connect()
+        messages: list[RawEmailMessage] = []
+        try:
+            status, _ = conn.select(self._folder, readonly=True)
+            if status != "OK":
+                raise EmailClientError(f"IMAP SELECT {self._folder} failed: {status}")
+            status, data = conn.uid("search", None, f"SINCE {day} {criteria}")
+            if status != "OK":
+                raise EmailClientError(f"IMAP UID SEARCH failed: {status}")
+            uids = sorted(int(u) for u in (data[0].split() if data and data[0] else []))
+            for uid in reversed(uids[-max_messages:]):
+                status, fetch_data = conn.uid("fetch", str(uid), "(RFC822)")
+                if status != "OK" or not fetch_data or fetch_data[0] is None:
+                    continue
+                raw_bytes = fetch_data[0][1]
+                if not isinstance(raw_bytes, bytes):
+                    continue
+                msg = email.message_from_bytes(raw_bytes)
+                received = _parse_email_date(msg.get("Date"))
+                if received is not None and received < since:
+                    continue
+                body = _extract_body_from_message(msg)
+                messages.append(
+                    RawEmailMessage(
+                        provider_message_id=str(uid),
+                        subject=_decode_header_value(msg.get("Subject")),
+                        sender=_decode_header_value(msg.get("From")),
+                        received_at=received,
+                        snippet=_truncate_snippet(body),
+                        body=body,
+                    )
+                )
+        finally:
+            try:
+                conn.logout()
+            except imaplib.IMAP4.error:
+                pass
+        return messages
 
     def fetch_new_messages(
         self,

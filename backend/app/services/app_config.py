@@ -1,4 +1,7 @@
-"""Local app-level config stored in SQLite (one-time setup the user does in the UI)."""
+"""Local app-level config stored in SQLite (one-time setup the user does in the UI).
+
+Secret values (the Gmail OAuth client secret) go to the secret store instead.
+"""
 
 from __future__ import annotations
 
@@ -8,9 +11,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import AppConfig
+from .secrets import GMAIL_CLIENT_SECRET, get_secret_store
 
 GMAIL_CLIENT_ID_KEY = "gmail_client_id"
-GMAIL_CLIENT_SECRET_KEY = "gmail_client_secret"
 
 
 def get_config_value(session: Session, key: str) -> str | None:
@@ -49,7 +52,7 @@ def resolve_gmail_credentials(session: Session) -> GmailOAuthCredentials | None:
     if not client_id:
         client_id = get_config_value(session, GMAIL_CLIENT_ID_KEY) or ""
     if not client_secret:
-        client_secret = get_config_value(session, GMAIL_CLIENT_SECRET_KEY) or ""
+        client_secret = (get_secret_store().get(GMAIL_CLIENT_SECRET) or "").strip()
 
     if not client_id or not client_secret:
         return None
@@ -63,7 +66,7 @@ def resolve_gmail_credentials(session: Session) -> GmailOAuthCredentials | None:
 
 def save_gmail_oauth_setup(session: Session, *, client_id: str, client_secret: str) -> None:
     set_config_value(session, GMAIL_CLIENT_ID_KEY, client_id)
-    set_config_value(session, GMAIL_CLIENT_SECRET_KEY, client_secret)
+    get_secret_store().set(GMAIL_CLIENT_SECRET, client_secret.strip())
 
 
 def gmail_oauth_configured(session: Session) -> bool:

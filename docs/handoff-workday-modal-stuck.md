@@ -1,5 +1,7 @@
 # Handoff — Workday “Start Your Application” modal stuck
 
+> **Superseded (2026-10-18):** this describes the retired heuristic/vision apply harness. See [apply-engine-spike.md](apply-engine-spike.md).
+
 **Date:** 2026-06-12  
 **Status:** Open (P0)  
 **Application under test:** BMO ML/AI Research Engineer (`application_id=40`)  

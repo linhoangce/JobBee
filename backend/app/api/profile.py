@@ -14,18 +14,17 @@ runs locally and we never sign anyone in, so "the local user" is always
 from __future__ import annotations
 
 import logging
-import secrets
 from datetime import datetime, timezone
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..db import get_session, get_uploads_dir
+from ..db import get_session
 from ..importers import ImporterError, import_github, import_resume, merge_drafts
 from ..llm.factory import get_llm_provider
-from ..models import Document, DocumentKind, User
+from ..llm.usage import llm_task
+from ..models import DocumentKind, User
 from ..schemas import (
     ApplicationDefaults,
     ProfileDraft,
@@ -34,6 +33,7 @@ from ..schemas import (
     ProfileUpdate,
 )
 from ..services.application_defaults import merge_application_defaults
+from ..services.documents import replace_base_document
 from ..services.text_extract import UnsupportedDocumentError, extract
 
 logger = logging.getLogger(__name__)
@@ -167,65 +167,6 @@ def update_profile(
     return _to_response(user)
 
 
-def _safe_filename(name: str) -> str:
-    keep = []
-    for ch in name:
-        if ch.isalnum() or ch in (".", "-", "_"):
-            keep.append(ch)
-        else:
-            keep.append("_")
-    cleaned = "".join(keep).strip("._") or "upload"
-    return cleaned[:160]
-
-
-def _replace_active_resume(
-    session: Session,
-    user_id: int,
-    *,
-    raw: bytes,
-    filename: str,
-    text: str,
-    mime: str | None,
-) -> Document:
-    """Drop any existing resume for the user, save the new bytes, persist a row."""
-
-    existing = session.execute(
-        select(Document).where(
-            Document.user_id == user_id, Document.kind == DocumentKind.resume
-        )
-    ).scalars().all()
-    for old in existing:
-        if old.file_path:
-            try:
-                p = Path(old.file_path)
-                if p.is_file():
-                    p.unlink()
-            except OSError:
-                pass
-        session.delete(old)
-
-    user_uploads = get_uploads_dir() / str(user_id)
-    user_uploads.mkdir(parents=True, exist_ok=True)
-    unique = secrets.token_hex(6)
-    saved_path = user_uploads / f"resume_{unique}_{_safe_filename(filename)}"
-    saved_path.write_bytes(raw)
-
-    doc = Document(
-        user_id=user_id,
-        kind=DocumentKind.resume,
-        label=filename,
-        content=text,
-        file_path=str(saved_path),
-        original_filename=filename,
-        mime_type=mime,
-        byte_size=len(raw),
-    )
-    session.add(doc)
-    session.commit()
-    session.refresh(doc)
-    return doc
-
-
 @router.post("/import", response_model=ProfileImportResponse)
 async def import_profile(
     github_username: str | None = Form(default=None),
@@ -278,23 +219,27 @@ async def import_profile(
             )
 
         # Persist the bytes immediately so the user can come back to them.
-        doc = _replace_active_resume(
+        doc = replace_base_document(
             session,
             user.id,
+            DocumentKind.resume,
+            text=extracted.text,
+            label=filename,
             raw=raw,
             filename=filename,
-            text=extracted.text,
-            mime=resume_file.content_type or extracted.mime_type,
+            mime_type=resume_file.content_type or extracted.mime_type,
         )
+        session.commit()
         document_id = doc.id
 
         provider = get_llm_provider()
         try:
-            resume_draft = await import_resume(
-                extracted.text,
-                provider=provider,
-                label=f"resume ({filename})",
-            )
+            with llm_task("import"):
+                resume_draft = await import_resume(
+                    extracted.text,
+                    provider=provider,
+                    label=f"resume ({filename})",
+                )
             drafts.append(resume_draft)
             if not resume_draft.data:
                 warnings.append(

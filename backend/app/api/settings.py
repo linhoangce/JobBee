@@ -7,13 +7,12 @@ the new values.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi import APIRouter
 
 from ..config import BACKEND_DIR, get_settings
 from ..llm.factory import reset_llm_provider
 from ..schemas import SettingsResponse, SettingsUpdate
+from ..services.secrets import ANTHROPIC_API_KEY, claude_api_key, get_secret_store
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -27,8 +26,6 @@ _FIELD_TO_ENV = {
     "llm_model": "LLM_MODEL",
     "llm_temperature": "LLM_TEMPERATURE",
     "llm_timeout_s": "LLM_TIMEOUT_S",
-    "apply_vision_enabled": "APPLY_VISION_ENABLED",
-    "apply_vision_model": "APPLY_VISION_MODEL",
 }
 
 
@@ -71,16 +68,26 @@ def _refresh_settings() -> None:
     reset_llm_provider()
 
 
+def save_env(updates: dict[str, str]) -> None:
+    """Persist settings to `backend/.env` and reload them."""
+
+    ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not ENV_PATH.exists():
+        ENV_PATH.touch()
+    _write_env(updates)
+    _refresh_settings()
+
+
 def _to_response(s) -> SettingsResponse:
     return SettingsResponse(
         llm_provider=s.llm_provider,
         llm_base_url=s.llm_base_url,
-        llm_model=s.llm_model,
+        llm_model=s.resolved_llm_model() if s.llm_provider == "anthropic" else s.llm_model,
         llm_temperature=s.llm_temperature,
         llm_timeout_s=s.llm_timeout_s,
-        apply_vision_enabled=s.apply_vision_enabled,
-        apply_vision_model=s.apply_vision_model,
-        has_api_key=bool(s.resolved_llm_api_key()),
+        has_api_key=bool(
+            claude_api_key() if s.llm_provider == "anthropic" else s.resolved_llm_api_key()
+        ),
     )
 
 
@@ -93,17 +100,20 @@ def read_settings() -> SettingsResponse:
 def update_settings(payload: SettingsUpdate) -> SettingsResponse:
     updates: dict[str, str] = {}
     data = payload.model_dump(exclude_unset=True)
+    provider = data.get("llm_provider") or get_settings().llm_provider
     for field, value in data.items():
         env_key = _FIELD_TO_ENV.get(field)
         if env_key is None or value is None:
             continue
+        if field == "llm_api_key" and provider == "anthropic":
+            # Claude keys live in the OS keyring (see /api/setup/claude-key), never in .env.
+            if str(value).strip():
+                get_secret_store().set(ANTHROPIC_API_KEY, str(value).strip())
+                reset_llm_provider()
+            continue
         updates[env_key] = str(value)
 
     if updates:
-        ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
-        if not ENV_PATH.exists():
-            ENV_PATH.touch()
-        _write_env(updates)
-        _refresh_settings()
+        save_env(updates)
 
     return _to_response(get_settings())

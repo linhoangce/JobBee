@@ -19,24 +19,71 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
 from .api import (
+    agent as agent_router,
+)
+from .api import (
     applications as applications_router,
-    approvals as approvals_router,
+)
+from .api import (
+    apply_runs as apply_runs_router,
+)
+from .api import (
     documents as documents_router,
+)
+from .api import (
     email as email_router,
+)
+from .api import (
     health,
-    jobs as jobs_router,
     llm,
+)
+from .api import (
+    home as home_router,
+)
+from .api import (
+    messaging as messaging_router,
+)
+from .api import (
+    preferences as preferences_router,
+)
+from .api import (
     profile as profile_router,
+)
+from .api import (
     settings as settings_router,
 )
+from .api import (
+    setup as setup_router,
+)
+from .api import (
+    site_accounts as site_accounts_router,
+)
+from .api import (
+    watchlist as watchlist_router,
+)
+from .apply.runs import run_manager
 from .config import get_settings
 from .db import init_db
+from .messaging.service import messaging
+from .pipeline.discovery import discovery
+from .pipeline.flow import job_flow
+from .pipeline.scheduler import scheduler
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    job_flow.register()
+    run_manager.register_chat_actions(messaging)
+    await run_manager.startup()
+    await messaging.start()
+    if get_settings().app_env != "test":
+        scheduler.start()
     yield
+    await scheduler.stop()
+    await discovery.stop()
+    await messaging.stop()
+    await run_manager.shutdown()
 
 
 def create_app() -> FastAPI:
@@ -63,10 +110,16 @@ def create_app() -> FastAPI:
     app.include_router(llm.router, prefix="/api")
     app.include_router(profile_router.router, prefix="/api")
     app.include_router(documents_router.router, prefix="/api")
-    app.include_router(jobs_router.router, prefix="/api")
-    app.include_router(approvals_router.router, prefix="/api")
     app.include_router(applications_router.router, prefix="/api")
+    app.include_router(apply_runs_router.router, prefix="/api")
     app.include_router(email_router.router, prefix="/api")
+    app.include_router(messaging_router.router, prefix="/api")
+    app.include_router(home_router.router, prefix="/api")
+    app.include_router(agent_router.router, prefix="/api")
+    app.include_router(setup_router.router, prefix="/api")
+    app.include_router(preferences_router.router, prefix="/api")
+    app.include_router(watchlist_router.router, prefix="/api")
+    app.include_router(site_accounts_router.router, prefix="/api")
 
     @app.get("/", include_in_schema=False)
     def root() -> dict:
