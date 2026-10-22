@@ -116,6 +116,7 @@ Tests never call a real model or Telegram. One test (`test_spike_driver.py`) dri
 
 ## Docs
 
+- [`docs/learn/`](docs/learn/README.md): build JobBee yourself from scratch, one stage at a time, with explanations and diagrams.
 - [`docs/ui-guide.md`](docs/ui-guide.md): try the whole flow in the browser.
 - [`docs/chat-agent.md`](docs/chat-agent.md): optional Telegram channel.
 - [`docs/apply-engine-spike.md`](docs/apply-engine-spike.md): the apply agent, its guard, and the CLI spike.
